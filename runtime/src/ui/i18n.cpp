@@ -79,6 +79,7 @@ const Entry kEn[] = {
     {"online.rustendo.token.desc", "Made on the website's Settings page; it works once and is replaced after sign-in."},
     {"online.rustendo.token_sign_in", "Sign in with token"},
     {"online.section.local", "Local Play"},
+    {"online.nextendo.android", "Nextendo Online is not available on Android yet. Local Play works."},
     {"online.nextendo.account", "Nextendo account"},
     {"online.friends", "Friends"},
     {"online.friends.desc", "{} online"},

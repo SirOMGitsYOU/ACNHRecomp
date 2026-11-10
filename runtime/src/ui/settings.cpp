@@ -952,6 +952,13 @@ void page_online() {
     if (nextendo) {
         section(rustendo ? "online.section.rustendo" : "online.section.nextendo");
         if (rustendo && nxo::version_ok_for_nextendo()) rustendo_server_row();
+#if defined(__ANDROID__)
+        // The account API's HTTPS goes through curl (nextendo_http.cpp), which Android does not have: no sign-in here
+        // until it moves onto Mbed TLS.
+        if (true) {
+            ImGui::TextWrapped("%s", tr("online.nextendo.android"));
+        } else
+#endif
         if (!nxo::version_ok_for_nextendo()) {
             ImGui::TextWrapped("%s", tr("online.nextendo.need_303"));
         } else if (acc.signed_in) {
@@ -988,6 +995,7 @@ void page_online() {
             });
             if (rustendo) rustendo_token_rows();
         }
+#if !defined(__ANDROID__)
         if (!rustendo) {  // the status check asks Nextendo's status page
             const std::string sdesc = status_text();
             row("online.server", sdesc.c_str(), [&](float w) {
@@ -997,6 +1005,7 @@ void page_online() {
                 page_nav_item();
             });
         }
+#endif
     }
     section("online.section.local");
     const bool busy = ldn_enabled();  // held until the session ends (hle_ldn.cpp): no switch to touch

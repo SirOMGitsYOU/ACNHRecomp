@@ -494,7 +494,13 @@ bool version_ok_for_nextendo() {
     return v == "3.0.3";
 }
 
-bool online_services_active() { return !is_local() && signed_in() && version_ok_for_nextendo(); }
+bool online_services_active() {
+#if defined(__ANDROID__)
+    return false;  // the account API needs curl (nextendo_http.cpp), which Android lacks; the Online page says so
+#else
+    return !is_local() && signed_in() && version_ok_for_nextendo();
+#endif
+}
 
 bool ldn_wanted() {
     if (const char* e = std::getenv("NX_LDN"); e && e[0] == '1') return true;
@@ -720,6 +726,39 @@ std::string api_base() {
 }
 
 std::string auth_base() { return is_rustendo() ? api_base() : checked_base("NEXTENDO_AUTH", api_base()); }
+
+// Nextendo's game and NAT-check servers. Nextendo publishes no DNS name for them (nextendo.network is its web front),
+// so the addresses in use in November 2026 are built in. They can be changed without a rebuild, as an IP or a host
+// name: NEXTENDO_SERVER_IP / NEXTENDO_NAT_IP, or online.nextendo.server / online.nextendo.nat in config.ini. A name is
+// resolved (and kept) on first use; the built-in address stands in when it does not resolve.
+static std::string address_of(const char* env, const char* key, const char* builtin) {
+    std::string v = env_or(env, "");
+#if !defined(NX_LAUNCHER_UI)
+    if (v.empty()) v = trim(config_get(key, ""));
+#else
+    (void)key;
+#endif
+    if (v.empty()) return builtin;
+    if (v.find_first_not_of("0123456789.") == std::string::npos) return v;  // already an IPv4 address
+    static std::mutex mu;
+    static std::map<std::string, std::string> resolved;
+    std::lock_guard lk(mu);
+    if (auto it = resolved.find(v); it != resolved.end()) return it->second;
+    net_init();
+    addrinfo hints{}, *res = nullptr;
+    hints.ai_family = AF_INET;
+    std::string ip = builtin;
+    if (getaddrinfo(v.c_str(), nullptr, &hints, &res) == 0 && res) {
+        char buf[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, buf, sizeof buf);
+        ip = buf;
+        freeaddrinfo(res);
+    } else {
+        log("nextendo: %s does not resolve; using %s", v.c_str(), builtin);
+    }
+    resolved[v] = ip;
+    return ip;
+}
 
 std::string server_ip() {
     return is_rustendo() ? env_or("RUSTENDO_SERVER_IP", "127.0.0.1")
