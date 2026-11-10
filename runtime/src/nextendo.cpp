@@ -64,6 +64,7 @@ std::string g_game_version;
 std::string g_last_error;
 std::string g_data_root_override;
 std::string g_mode_override;
+std::string g_rustendo_api_override;
 std::string g_client_id_override;
 std::atomic<bool> g_sign_in_busy{false};
 std::unordered_map<uint32_t, std::string> g_ip_host;
@@ -219,7 +220,8 @@ std::string data_root() {
 #endif
 }
 
-std::string account_path() { return data_root() + "/nextendo_account.json"; }
+// Each server keeps its own sign-in, so switching never sends one server's tokens to the other.
+std::string account_path() { return data_root() + (is_rustendo() ? "/rustendo_account.json" : "/nextendo_account.json"); }
 
 std::string env_or(const char* name, const std::string& fallback) {
     if (const char* e = std::getenv(name); e && e[0]) return e;
@@ -391,7 +393,7 @@ bool oauth_listen(const std::string& expect_state, std::string& code_out, int ti
 }
 
 bool exchange_token(const std::string& form, Account& out) {
-    auto r = http_request("POST", api_base() + "/api/oauth/token",
+    auto r = http_request("POST", api_base() + (is_rustendo() ? "/oauth/token" : "/api/oauth/token"),
                           {{"X-Nextendo-Client-Id", client_id()}, {"Accept", "application/json"}}, form,
                           "application/x-www-form-urlencoded");
     if (r.status != 200) {
@@ -413,7 +415,7 @@ bool exchange_token(const std::string& form, Account& out) {
         set_error("token response missing access_token");
         return false;
     }
-    auto ui = http_request("GET", api_base() + "/api/oauth/userinfo",
+    auto ui = http_request("GET", api_base() + (is_rustendo() ? "/api/me" : "/api/oauth/userinfo"),
                            {{"Authorization", "Bearer " + out.access_token},
                             {"X-Nextendo-Client-Id", client_id()},
                             {"Accept", "application/json"}});
@@ -451,9 +453,13 @@ Mode mode() {
         std::lock_guard lk(g_mu);
         if (g_mode_override == "local") return Mode::Local;
         if (g_mode_override == "nextendo") return Mode::Nextendo;
+        if (g_mode_override == "rustendo") return Mode::Rustendo;
     }
+    if (const char* e = std::getenv("RUSTENDO_API"); e && e[0]) return Mode::Rustendo;
 #if !defined(NX_LAUNCHER_UI)
-    if (config_get("online.mode", "nextendo") == "local") return Mode::Local;
+    const std::string m = config_get("online.mode", "nextendo");
+    if (m == "local") return Mode::Local;
+    if (m == "rustendo") return Mode::Rustendo;
 #endif
     return Mode::Nextendo;
 }
@@ -488,7 +494,7 @@ bool version_ok_for_nextendo() {
     return v == "3.0.3";
 }
 
-bool online_services_active() { return is_nextendo() && signed_in() && version_ok_for_nextendo(); }
+bool online_services_active() { return !is_local() && signed_in() && version_ok_for_nextendo(); }
 
 bool ldn_wanted() {
     if (const char* e = std::getenv("NX_LDN"); e && e[0] == '1') return true;
@@ -503,7 +509,11 @@ bool ldn_wanted() {
 
 void load_account() {
     std::ifstream in(account_path());
-    if (!in) return;
+    if (!in) {  // nothing saved for this server (or after switching servers): signed out
+        std::lock_guard lk(g_mu);
+        g_account = Account{};
+        return;
+    }
     std::ostringstream ss;
     ss << in.rdbuf();
     const std::string j = ss.str();
@@ -603,6 +613,7 @@ bool signed_in() {
 constexpr const char* kDefaultClientId = "nxc_t63scKVq2hF1";
 
 std::string client_id() {
+    if (is_rustendo()) return "acnhrecomp";  // Rustendo needs no registration: any loopback app may ask
     if (const char* e = std::getenv("NEXTENDO_CLIENT_ID"); e && e[0]) return e;
     {
         std::lock_guard lk(g_mu);
@@ -641,9 +652,12 @@ static std::string checked_base(const char* var, const std::string& fallback) {
     return fallback;
 }
 
-std::string api_base() { return checked_base("NEXTENDO_API", "https://nextendo.network"); }
+constexpr const char* kDefaultRustendoApi = "http://127.0.0.1:8090";
 
-std::string auth_base() { return checked_base("NEXTENDO_AUTH", api_base()); }
+void set_rustendo_api_override(const std::string& base) {
+    std::lock_guard lk(g_mu);
+    g_rustendo_api_override = base;
+}
 
 // Nextendo's game and NAT-check servers. Nextendo publishes no DNS name for them (nextendo.network is its web front),
 // so the addresses in use in November 2026 are built in. They can be changed without a rebuild, as an IP or a host
@@ -678,8 +692,43 @@ static std::string address_of(const char* env, const char* key, const char* buil
     return ip;
 }
 
-std::string server_ip() { return address_of("NEXTENDO_SERVER_IP", "online.nextendo.server", "51.178.29.194"); }
-std::string nat_ip() { return address_of("NEXTENDO_NAT_IP", "online.nextendo.nat", "164.132.111.120"); }
+// The Rustendo website the player chose (env RUSTENDO_API, else the launcher's or config online.rustendo_api, else the
+// local default). Named explicitly by the player, so any http(s) address is taken as given.
+std::string rustendo_api() {
+    std::string b = env_or("RUSTENDO_API", "");
+    if (b.empty()) {
+        std::lock_guard lk(g_mu);
+        b = g_rustendo_api_override;
+    }
+#if !defined(NX_LAUNCHER_UI)
+    if (b.empty()) b = config_get("online.rustendo_api", "");
+#endif
+    b = trim(b);
+    while (!b.empty() && b.back() == '/') b.pop_back();
+    if (!b.empty() && b.rfind("http://", 0) != 0 && b.rfind("https://", 0) != 0) {
+        log("nextendo: ignoring rustendo_api=%s (needs http:// or https://)", b.c_str());
+        b.clear();
+    }
+    return b.empty() ? kDefaultRustendoApi : b;
+}
+
+bool is_rustendo() { return mode() == Mode::Rustendo; }
+
+std::string api_base() {
+    if (is_rustendo()) return rustendo_api();
+    return checked_base("NEXTENDO_API", "https://nextendo.network");
+}
+
+std::string auth_base() { return is_rustendo() ? api_base() : checked_base("NEXTENDO_AUTH", api_base()); }
+
+std::string server_ip() {
+    return is_rustendo() ? env_or("RUSTENDO_SERVER_IP", "127.0.0.1")
+                         : address_of("NEXTENDO_SERVER_IP", "online.nextendo.server", "51.178.29.194");
+}
+std::string nat_ip() {
+    return is_rustendo() ? env_or("RUSTENDO_NAT_IP", "127.0.0.2")
+                         : address_of("NEXTENDO_NAT_IP", "online.nextendo.nat", "164.132.111.120");
+}
 
 bool sign_in_busy() { return g_sign_in_busy.load(); }
 
@@ -718,7 +767,8 @@ void sign_in_start() {
         if (!oauth_listen(state, code, 180, [&](uint16_t port) {
                 redirect_uri = "http://127.0.0.1:" + std::to_string(port) + "/callback";
                 const std::string url =
-                    auth_base() + "/api/oauth/authorize?client_id=" + percent_encode(cid) +
+                    auth_base() + (is_rustendo() ? "/oauth/authorize" : "/api/oauth/authorize") +
+                    "?client_id=" + percent_encode(cid) +
                     "&redirect_uri=" + percent_encode(redirect_uri) + "&response_type=code&scope=" +
                     percent_encode("identity friends presence game.matchmaking") + "&state=" + percent_encode(state) +
                     "&code_challenge=" + percent_encode(challenge) + "&code_challenge_method=S256";
@@ -740,6 +790,36 @@ void sign_in_start() {
 #if !defined(NX_LAUNCHER_UI)
         presence_start();  // signed in from the settings screen while the game runs
 #endif
+    }).detach();
+}
+
+void sign_in_with_token(uint64_t user_id, const std::string& token_in) {
+    if (g_sign_in_busy.exchange(true)) return;
+    clear_error();
+    const std::string token = trim(token_in);
+    std::thread([user_id, token] {
+        struct Done {
+            ~Done() { g_sign_in_busy = false; }
+        } done;
+        if (!is_rustendo()) return set_error("Token sign-in is for Rustendo.");
+        if (!user_id || token.empty()) return set_error("Enter the user id and game token from the Rustendo website.");
+        // The game token is a refresh token issued to this app: one use, then the new one is kept.
+        const std::string form = "grant_type=refresh_token&client_id=" + percent_encode(client_id()) +
+                                 "&refresh_token=" + percent_encode(token);
+        Account a;
+        if (!exchange_token(form, a)) {
+            set_error("Rustendo refused that game token (it works once and expires after 30 days): make a new one.");
+            return;
+        }
+        if (a.pid != user_id) {
+            // Someone else's token: drop the session it opened rather than play on the wrong account.
+            set_error("That game token belongs to another user id.");
+            return;
+        }
+        set_account(a);
+        save_account();
+        ensure_online_identity();
+        log("nextendo: signed in to Rustendo as %s with a game token", account().username.c_str());
     }).detach();
 }
 
@@ -786,6 +866,23 @@ HttpResponse api_get(const std::string& path) {
 // GET /api/nex-token (scope game.matchmaking): {nex_token, pid, friend_code, username, expires_in}; 24 h.
 bool fetch_nex_token() {
     if (account().access_token.empty()) return false;
+    if (is_rustendo()) {
+        // Rustendo signs the game's id_token itself (GET /api/game/id-token: {id_token, expires_in, nickname}); it is
+        // kept in nex_token and handed to the game as is (nextendo_token.cpp).
+        auto r = api_get("/api/game/id-token");
+        Account a = account();
+        a.nex_token = r.status == 200 ? json_str(r.body, "id_token") : std::string();
+        if (a.nex_token.empty()) {
+            std::string why = json_str(r.body, "error");
+            set_error("Rustendo refused a game token" + (why.empty() ? " (HTTP " + std::to_string(r.status) + ")." : ": " + why));
+            return false;
+        }
+        const uint64_t ttl = json_u64(r.body, "expires_in");
+        a.nex_expires_unix = now_unix() + (ttl ? ttl : 3600);
+        set_account(a);
+        save_account();
+        return true;
+    }
     auto r = api_get("/api/nex-token");
     if (r.status != 200) {
         set_error(r.status == 403 ? "Nextendo refused a game token (approve the game.matchmaking permission, or check "
@@ -811,7 +908,8 @@ bool fetch_nex_token() {
 static bool fetch_nsa() {
     auto r = api_get("/api/me");
     if (r.status != 200) return false;
-    const uint64_t nsa = parse_hex16(json_str(r.body, "nsa"));
+    uint64_t nsa = parse_hex16(json_str(r.body, "nsa"));
+    if (!nsa) nsa = parse_hex16(json_str(r.body, "baas_id"));  // Rustendo's name for it
     if (!nsa) return false;
     Account a = account();
     a.nsa = nsa;
@@ -837,6 +935,7 @@ Friend parse_friend(const std::string& o) {
     Friend f;
     f.pid = json_u64(o, "pid");
     f.nsa = parse_hex16(json_str(o, "nsa"));
+    if (!f.nsa) f.nsa = parse_hex16(json_str(o, "baas_id"));  // Rustendo
     f.name = json_str(o, "name");
     if (f.name.empty()) f.name = json_str(o, "username");
     f.friend_code = json_str(o, "friend_code");
@@ -845,6 +944,9 @@ Friend parse_friend(const std::string& o) {
     if (!pres.empty()) {
         f.status = int(json_u64(pres, "status"));
         f.app_id = json_str(pres, "app_id");
+    } else if (std::string playing = json_str(o, "playing"); !playing.empty()) {  // Rustendo: title being played
+        f.status = json_str(o, "online_play") == "true" ? 2 : 1;  // 2: in online play (gates open, visiting)
+        f.app_id = playing;
     }
     return f;
 }
@@ -864,8 +966,8 @@ bool fetch_friend_lists(FriendLists& out) {
     auto r = api_get("/api/friends");
     if (r.status != 200) return false;
     out.friends = parse_friends(json_member(r.body, "friends"));
-    out.incoming = parse_friends(json_member(r.body, "requests"));
-    out.outgoing = parse_friends(json_member(r.body, "sent"));
+    out.incoming = parse_friends(json_member(r.body, is_rustendo() ? "incoming" : "requests"));
+    out.outgoing = parse_friends(json_member(r.body, is_rustendo() ? "outgoing" : "sent"));
     out.loaded = true;
     return true;
 }
@@ -975,10 +1077,19 @@ bool api_post(const std::string& path, const std::string& body, std::string& mes
 }  // namespace
 
 bool send_friend_request(const std::string& friend_code, std::string& message) {
-    return api_post("/api/friends", "{\"friend_code\":\"" + json_escape(friend_code) + "\"}", message);
+    return api_post(is_rustendo() ? "/api/friends/request" : "/api/friends",
+                    "{\"friend_code\":\"" + json_escape(friend_code) + "\"}", message);
 }
 
 bool answer_friend_request(uint64_t pid, bool accept, std::string& message) {
+    if (is_rustendo()) {  // Rustendo answers by friend code; the request list has it
+        std::string code;
+        for (const Friend& f : friend_lists_cached().incoming)
+            if (f.pid == pid) code = f.friend_code;
+        if (code.empty()) return message = "That request is no longer there.", false;
+        return api_post(accept ? "/api/friends/accept" : "/api/friends/remove",
+                        "{\"friend_code\":\"" + json_escape(code) + "\"}", message);
+    }
     return api_post(accept ? "/api/friends/accept" : "/api/friends/decline",
                     "{\"pid\":" + std::to_string(pid) + "}", message);
 }
@@ -992,6 +1103,7 @@ std::condition_variable g_presence_cv;
 
 // POST /api/presence {status, app_field, app_id, app_detail}: 1 online, 2 in an online session.
 bool post_presence(int status) {
+    // Rustendo's game servers report who is playing; this tells it when we are in online play (status 2).
     char body[160];
     std::snprintf(body, sizeof body, "{\"status\":%d,\"app_field\":\"\",\"app_id\":\"%016llX\",\"app_detail\":\"\"}",
                   status, (unsigned long long)kAcnhTitleId);
@@ -1086,6 +1198,10 @@ std::string host_for_ip(uint32_t ip_be) {
 
 uint64_t network_service_account_id() {
     Account a = account();
+    // Rustendo: the NEX pid. ACNH names friends by this id in its NEX calls (Search for a friend asks the game server
+    // for sessions by it) and checks it against session owners, which the game server knows only by pid. A save
+    // taken online under another id (Nextendo's baasUserID) belongs to that account: use one not yet online.
+    if (is_rustendo() && a.pid) return a.pid;
     if (a.nsa) return a.nsa;
     return a.pid ? a.pid : 0x1234ABCD5678EF90ull;
 }

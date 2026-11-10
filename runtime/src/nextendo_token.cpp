@@ -117,6 +117,10 @@ bool load_key() {
 }  // namespace
 
 std::string baas_id_token(const std::string& display_version) {
+    if (is_rustendo()) {  // Rustendo signs the id_token itself (fetch_nex_token keeps it in nex_token)
+        const Account a = account();
+        return a.signed_in ? a.nex_token : std::string();
+    }
     const Account a = account();
     if (!a.signed_in || a.nex_token.empty()) return {};
     std::lock_guard lk(g_mu);

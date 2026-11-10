@@ -3,6 +3,10 @@
 
 #include <nx/cpu.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
 namespace nx {
 
 bool hostnet_active();
@@ -30,6 +34,11 @@ void hostnet_GetHostByName(CPU& c);
 void hostnet_Poll(CPU& c);
 
 bool hostnet_is_nonblocking(int guest_fd);
+
+// NX_NET_CAPTURE=1: every TLS payload and UDP datagram, appended to <data root>/net_capture.jsonl as
+// {t, kind ("tls"/"udp"), id, peer, dir ("in"/"out"), len, data (base64)} for Rustendo's tools/acnh_capture.py.
+// The file holds tokens and passwords: keep it private.
+void net_capture(const char* kind, int id, const std::string& peer, const char* dir, const uint8_t* p, size_t n);
 uint32_t hostnet_local_ip();  // network order; 0 if unknown
 
 // Native SOCKET for SSL (kBadSock if unknown).

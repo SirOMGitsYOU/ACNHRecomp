@@ -37,6 +37,11 @@ void discord_presence_start();  // discord_presence.cpp
 namespace nextendo {
 void load_account();
 void presence_start();
+bool is_rustendo();
+bool is_local();
+bool signed_in();
+bool version_ok_for_nextendo();
+bool online_services_active();
 }
 namespace save_unlink {
 void run_if_requested();  // save_unlink.cpp
@@ -160,6 +165,9 @@ static void nn_main(CPU& c) {
     log("entering nnMain");
     discord_presence_start();  // [discord] in config.ini; enabled = 0 turns it off
     nextendo::load_account();  // Nextendo OAuth session from nextendo_account.json
+    log("online: server %s, signed in %d, version ok %d, online services %d",
+        nextendo::is_local() ? "none" : nextendo::is_rustendo() ? "rustendo" : "nextendo", int(nextendo::signed_in()),
+        int(nextendo::version_ok_for_nextendo()), int(nextendo::online_services_active()));
     nextendo::presence_start();  // POST /api/presence every 60 s while online; nothing when signed out or Local Only
     cpu_profile_register("main");  // NX_CPU_PROFILE (cpu_profile.cpp)
     uint64_t real = 0;

@@ -142,8 +142,10 @@ void toast(const std::string& text) {
 // desktop's present pass is chosen at start).
 bool needs_restart(const std::string& key) {
     if (key.rfind("online.", 0) == 0) {
-        if (key == "online.mode")
-            ::nx::nextendo::presence_start();  // starts once, when signed in and in Nextendo mode; idles while not online
+        if (key == "online.mode" || key == "online.rustendo_api") {
+            ::nx::nextendo::load_account();    // each server keeps its own sign-in
+            ::nx::nextendo::presence_start();  // starts once, when signed in and online; idles while not online
+        }
         return false;  // LDN reads online.enabled at session start; Nextendo reads mode live
     }
 #if defined(__ANDROID__)
@@ -884,10 +886,50 @@ void page_fix_link() {
 }
 #endif
 
-// Network mode: Local Only (no Nextendo at all) or Nextendo (account, server status, friends). Local Play peer visits
-// (docs/LOCAL_PLAY.md) follow their own switch in both.
+// Rustendo's server address.
+void rustendo_server_row() {
+    row("online.rustendo.api", tr("online.rustendo.api.desc"), [&](float w) {
+        static char api[160] = {};
+        static bool loaded = false;
+        if (!loaded) {
+            loaded = true;
+            std::snprintf(api, sizeof api, "%s", nxo::rustendo_api().c_str());
+        }
+        ImGui::SetNextItemWidth(w);
+        ImGui::InputText("##rustendo_api", api, sizeof api);
+        page_nav_item();
+        if (ImGui::IsItemDeactivatedAfterEdit()) store("online.rustendo_api", api);
+    });
+}
+
+// Signed out of Rustendo: the user id + game token sign-in (both on the website's Settings page), so several copies of
+// the game on one computer can each use their own account.
+void rustendo_token_rows() {
+    static char user_id[24] = {}, token[128] = {};
+    row("online.rustendo.user_id", tr("online.rustendo.user_id.desc"), [&](float w) {
+        ImGui::SetNextItemWidth(w);
+        ImGui::InputText("##rustendo_user", user_id, sizeof user_id, ImGuiInputTextFlags_CharsDecimal);
+        page_nav_item();
+    });
+    row("online.rustendo.token", tr("online.rustendo.token.desc"), [&](float w) {
+        ImGui::SetNextItemWidth(w);
+        ImGui::InputText("##rustendo_token", token, sizeof token, ImGuiInputTextFlags_Password);
+        page_nav_item();
+        const bool busy = nxo::sign_in_busy();
+        if (ImGui::Button(tr(busy ? "online.nextendo.signing_in" : "online.rustendo.token_sign_in"), ImVec2(w, 0)) &&
+            !busy) {
+            nxo::sign_in_with_token(std::strtoull(user_id, nullptr, 10), token);
+            token[0] = 0;  // a game token works once: never kept in the UI
+        }
+        page_nav_item();
+    });
+}
+
+// Network mode: Local Only (no online server), Nextendo, or Rustendo (account, friends; Nextendo also server status).
+// Local Play peer visits (docs/LOCAL_PLAY.md) follow their own switch in all of them.
 void page_online() {
-    const bool nextendo = config_get("online.mode", "nextendo") == "nextendo";
+    const std::string mode = config_get("online.mode", "nextendo");
+    const bool rustendo = mode == "rustendo", nextendo = mode == "nextendo" || rustendo;  // nextendo: any online server
     const nxo::Account acc = nxo::account();
     if (g_friends_view && nextendo && acc.signed_in) return page_friends();
     g_friends_view = false;
@@ -896,17 +938,20 @@ void page_online() {
 #endif
     row("online.mode", tr("online.mode.desc"), [&](float w) {
         [[maybe_unused]] const float x = ImGui::GetCursorPosX();  // the control column, on the right
-        combo("online.mode", "nextendo", {{"local", tr("online.mode.local")}, {"nextendo", tr("online.mode.nextendo")}}, w);
+        combo("online.mode", "nextendo",
+              {{"local", tr("online.mode.local")}, {"nextendo", tr("online.mode.nextendo")}, {"rustendo", tr("online.mode.rustendo")}},
+              w);
 #if !defined(__ANDROID__)
         // A save linked on another network (Rustendo, Pretendo, a console) refuses to load here: the red button,
-        // under the dropdown in either mode, opens the page that explains the fix and runs it (save_unlink.h).
+        // under the dropdown in any mode, opens the page that explains the fix and runs it (save_unlink.h).
         ImGui::SetCursorPosX(x);
         if (red_button(tr("online.fix_link"), w)) g_fix_link_view = true;
         page_nav_item();
 #endif
     });
     if (nextendo) {
-        section("online.section.nextendo");
+        section(rustendo ? "online.section.rustendo" : "online.section.nextendo");
+        if (rustendo && nxo::version_ok_for_nextendo()) rustendo_server_row();
         if (!nxo::version_ok_for_nextendo()) {
             ImGui::TextWrapped("%s", tr("online.nextendo.need_303"));
         } else if (acc.signed_in) {
@@ -928,24 +973,30 @@ void page_online() {
                 page_nav_item();
             });
         } else {
-            std::string desc = std::string(tr("online.nextendo.desc")) + "\n" + tr("online.nextendo.requirements");
+            std::string desc = rustendo ? std::string(tr("online.rustendo.desc"))
+                                        : std::string(tr("online.nextendo.desc")) + "\n" + tr("online.nextendo.requirements");
             if (nxo::client_id().empty()) desc += std::string("\n") + tr("online.nextendo.need_client_id");
             if (!nxo::last_error().empty()) desc += "\n" + nxo::last_error();
-            row("online.nextendo.account", desc.c_str(), [&](float w) {
+            row(rustendo ? "online.rustendo.account" : "online.nextendo.account", desc.c_str(), [&](float w) {
                 const bool busy = nxo::sign_in_busy();
-                if (ImGui::Button(tr(busy ? "online.nextendo.signing_in" : "online.nextendo.sign_in"), ImVec2(w, 0)) &&
+                if (ImGui::Button(tr(busy ? "online.nextendo.signing_in"
+                                          : rustendo ? "online.rustendo.sign_in" : "online.nextendo.sign_in"),
+                                  ImVec2(w, 0)) &&
                     !busy)
                     nxo::sign_in_start();
                 page_nav_item();
             });
+            if (rustendo) rustendo_token_rows();
         }
-        const std::string sdesc = status_text();
-        row("online.server", sdesc.c_str(), [&](float w) {
-            if (ImGui::Button(tr(g_status.running ? "online.server.checking_button" : "online.server.check"),
-                              ImVec2(w, 0)))
-                status_check_start();
-            page_nav_item();
-        });
+        if (!rustendo) {  // the status check asks Nextendo's status page
+            const std::string sdesc = status_text();
+            row("online.server", sdesc.c_str(), [&](float w) {
+                if (ImGui::Button(tr(g_status.running ? "online.server.checking_button" : "online.server.check"),
+                                  ImVec2(w, 0)))
+                    status_check_start();
+                page_nav_item();
+            });
+        }
     }
     section("online.section.local");
     const bool busy = ldn_enabled();  // held until the session ends (hle_ldn.cpp): no switch to touch

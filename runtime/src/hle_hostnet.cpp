@@ -19,6 +19,9 @@
 
 #include "hle_ldn.h"
 #include "kernel.h"
+#include "platform.h"
+
+#include <cstdio>
 
 namespace nx {
 
@@ -117,6 +120,8 @@ int host_errno() {
 
 int host_fail() { return fail(host_errno()); }
 
+void udp_trace(const char* what, int fd, const sockaddr_in* a, int64_t r);
+
 // The host socket behind a guest fd (copied out under the lock), or kBadSock.
 sock_t lookup(int fd, HostSock* out = nullptr) {
     std::lock_guard lk(g_mu);
@@ -180,6 +185,7 @@ bool resolve_host(const std::string& host, uint32_t& ip_be) {
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
     ip_be = reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr.s_addr;
     freeaddrinfo(res);
+    log("hostnet: %s resolved (not a Nintendo name)", host.c_str());
     nextendo::remember_sni(ip_be, host);
     return true;
 }
@@ -336,12 +342,14 @@ void hostnet_Bind(CPU& c) {
                 sock_close(g_socks[i].s);
                 g_socks[i].s = kept;
                 set_nonblocking(kept, g_socks[i].nonblock);
+                udp_trace("Bind (kept mapping)", int(c.x[0]), &in, 0);
                 return ret(c, 0);
             }
         }
     }
-    if (bind(s, reinterpret_cast<sockaddr*>(&in), sizeof in) != 0) return ret(c, host_fail());
-    ret(c, 0);
+    const int64_t r = bind(s, reinterpret_cast<sockaddr*>(&in), sizeof in) != 0 ? host_fail() : 0;
+    udp_trace("Bind", int(c.x[0]), &in, r);
+    ret(c, r);
 }
 
 void hostnet_Connect(CPU& c) {
@@ -349,6 +357,10 @@ void hostnet_Connect(CPU& c) {
     if (s == kBadSock) return ret(c, fail(kEBADF));
     sockaddr_in in;
     if (!read_sockaddr(c.x[1], c.x[2], in)) return ret(c, fail(kEINVAL));
+    static std::atomic<int> traced{0};
+    if (traced++ < 64)
+        log("hostnet: Connect(%d, %u.%u.%u.%u:%u)", int(c.x[0]), in.sin_addr.s_addr & 0xFF, (in.sin_addr.s_addr >> 8) & 0xFF,
+            (in.sin_addr.s_addr >> 16) & 0xFF, in.sin_addr.s_addr >> 24, ntohs(in.sin_port));
     if (connect(s, reinterpret_cast<sockaddr*>(&in), sizeof in) == 0) return ret(c, 0);
     int e = host_errno();
     if (e == kEAGAIN) e = kEINPROGRESS;  // Windows: a non-blocking connect reports WSAEWOULDBLOCK
@@ -369,6 +381,58 @@ int host_flags(int flags) {
     return f;
 }
 
+}  // namespace
+
+void net_capture(const char* kind, int id, const std::string& peer, const char* dir, const uint8_t* p, size_t n) {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_NET_CAPTURE");
+        return e && e[0] == '1';
+    }();
+    if (!on || !p || !n) return;
+    static std::mutex mu;
+    static std::FILE* f = nullptr;
+    std::lock_guard lk(mu);
+    if (!f) {
+        const std::string path = plat::data_root() + "/net_capture.jsonl";
+        f = std::fopen(path.c_str(), "ab");
+        if (!f) return;
+        log("hostnet: NX_NET_CAPTURE writing every network payload to %s (it holds tokens and passwords: keep it private)",
+            path.c_str());
+    }
+    static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string data;
+    data.reserve((n + 2) / 3 * 4);
+    for (size_t i = 0; i < n; i += 3) {
+        const uint32_t v = uint32_t(p[i]) << 16 | (i + 1 < n ? uint32_t(p[i + 1]) << 8 : 0) | (i + 2 < n ? p[i + 2] : 0);
+        data += b64[v >> 18 & 63];
+        data += b64[v >> 12 & 63];
+        data += i + 1 < n ? b64[v >> 6 & 63] : '=';
+        data += i + 2 < n ? b64[v & 63] : '=';
+    }
+    const auto t = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    std::fprintf(f, "{\"t\":%lld,\"kind\":\"%s\",\"id\":%d,\"peer\":\"%s\",\"dir\":\"%s\",\"len\":%zu,\"data\":\"%s\"}\n",
+                 (long long)t, kind, id, peer.c_str(), dir, n, data.c_str());
+    std::fflush(f);
+}
+
+namespace {
+
+std::string addr_text(const sockaddr_in& a) {
+    const uint32_t ip = a.sin_addr.s_addr;
+    char b[32];
+    std::snprintf(b, sizeof b, "%u.%u.%u.%u:%u", ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, ip >> 24, ntohs(a.sin_port));
+    return b;
+}
+
+// DIAG: the first datagram calls, with their outcome.
+void udp_trace(const char* what, int fd, const sockaddr_in* a, int64_t r) {
+    static std::atomic<int> n{0};
+    if (n++ >= 5000) return;
+    const uint32_t ip = a ? a->sin_addr.s_addr : 0;
+    log("hostnet: %s(%d, %u.%u.%u.%u:%u) -> %lld errno %d", what, fd, ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF,
+        ip >> 24, a ? ntohs(a->sin_port) : 0, (long long)r, r < 0 ? t_errno : 0);
+}
+
 int64_t do_send(int fd, uint64_t buf, uint64_t n, int flags, uint64_t to, uint64_t tolen) {
     HostSock hs;
     sock_t s = lookup(fd, &hs);
@@ -379,7 +443,12 @@ int64_t do_send(int fd, uint64_t buf, uint64_t n, int flags, uint64_t to, uint64
     const int r = has_to ? int(sendto(s, reinterpret_cast<const char*>(buf), int(n), MSG_NOSIGNAL,
                                       reinterpret_cast<sockaddr*>(&in), sizeof in))
                          : int(send(s, reinterpret_cast<const char*>(buf), int(n), MSG_NOSIGNAL));
-    return r < 0 ? host_fail() : r;
+    const int64_t res = r < 0 ? host_fail() : r;
+    if (hs.type == kSockDgram) {
+        udp_trace("SendTo", fd, has_to ? &in : nullptr, res);
+        if (res > 0 && has_to) net_capture("udp", fd, addr_text(in), "out", reinterpret_cast<const uint8_t*>(buf), size_t(res));
+    }
+    return res;
 }
 
 int64_t do_recv(int fd, uint64_t buf, uint64_t n, int flags, uint64_t from, uint64_t fromlen) {
@@ -395,7 +464,15 @@ int64_t do_recv(int fd, uint64_t buf, uint64_t n, int flags, uint64_t from, uint
     // A datagram bigger than the buffer: Windows fails, the Switch (BSD) truncates.
     if (r < 0 && WSAGetLastError() == WSAEMSGSIZE) return int64_t(n);
 #endif
-    if (r < 0) return host_fail();
+    if (r < 0) {
+        const int64_t e = host_fail();
+        if (hs.type == kSockDgram && t_errno != kEAGAIN) udp_trace("RecvFrom", fd, nullptr, e);
+        return e;
+    }
+    if (hs.type == kSockDgram) {
+        udp_trace("RecvFrom", fd, &in, r);
+        if (r > 0) net_capture("udp", fd, addr_text(in), "in", reinterpret_cast<const uint8_t*>(buf), size_t(r));
+    }
     if (from && inlen >= sizeof(sockaddr_in) && in.sin_family == AF_INET) write_sockaddr(from, fromlen, in);
     return r;
 }
@@ -419,6 +496,7 @@ void hostnet_GetAddrInfo(CPU& c) {
     }
     uint32_t ip = 0;
     if (node && node[0] && !resolve_host(node, ip)) {
+        log("hostnet: GetAddrInfo(%s) found nothing", node);
         c.x[0] = kEaiNoName;
         return;
     }
@@ -651,15 +729,15 @@ bool hostnet_is_nonblocking(int guest_fd) {
     return lookup(guest_fd, &hs) != kBadSock && hs.nonblock;
 }
 
-uint32_t hostnet_local_ip() {
-    // The interface the host would use to reach Nextendo: connect a UDP socket (sends nothing) and read its address.
-    net_init();
+namespace {
+// The interface the host would use to reach `target`: connect a UDP socket (sends nothing) and read its address.
+uint32_t interface_ip_toward(const char* target) {
     sock_t s = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (s == kBadSock) return 0;
     sockaddr_in to{};
     to.sin_family = AF_INET;
     to.sin_port = htons(443);
-    to.sin_addr.s_addr = inet_addr(nextendo::server_ip().c_str());
+    to.sin_addr.s_addr = inet_addr(target);
     sockaddr_in me{};
     socklen_t l = sizeof me;
     uint32_t ip = 0;
@@ -667,6 +745,17 @@ uint32_t hostnet_local_ip() {
         getsockname(s, reinterpret_cast<sockaddr*>(&me), &l) == 0)
         ip = me.sin_addr.s_addr;
     sock_close(s);
+    return ip;
+}
+}  // namespace
+
+uint32_t hostnet_local_ip() {
+    net_init();
+    const uint32_t ip = interface_ip_toward(nextendo::server_ip().c_str());
+    // A server on this computer (Rustendo on 127.0.0.1) would make the console's address loopback, which Pia never
+    // reports as its own (no ReplaceURL, so visitors get no port): use the LAN interface instead. Sends nothing.
+    if ((ip & 0xFF) == 127)
+        if (const uint32_t lan = interface_ip_toward("8.8.8.8")) return lan;
     return ip;
 }
 

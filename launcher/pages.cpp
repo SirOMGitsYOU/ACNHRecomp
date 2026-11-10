@@ -2542,16 +2542,83 @@ void footer_settings() {
 
 // ---- online: local play over the network (ldn_mitm's protocol), the same settings as the game's Online page ------
 
+// Rustendo: server address, then the account (browser sign-in, or the user id + game token from the website).
+void page_online_rustendo() {
+    nx::nextendo::set_data_root(g_build.data);
+    nx::nextendo::set_mode_override("rustendo");
+    nx::nextendo::set_rustendo_api_override(g_game_ini.get("online.rustendo_api", ""));
+    BuildContents c = build_contents(g_build.data);
+    if (!c.version.empty()) nx::nextendo::set_game_version(c.version);
+    nx::nextendo::load_account();
+    ImGui::TextUnformatted(tr("online.rustendo.api"));
+    text_small(tr("online.rustendo.api.desc"));
+    static char api[160] = {};
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        std::snprintf(api, sizeof api, "%s", nx::nextendo::rustendo_api().c_str());
+    }
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputText("##rustendo_api", api, sizeof api);
+    nav_item();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        g_game_ini.set("online.rustendo_api", api);
+        if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
+    }
+    if (!nx::nextendo::version_ok_for_nextendo()) {
+        ImGui::TextWrapped("%s", tr("online.nextendo.need_303"));
+        ImGui::Separator();
+        return;
+    }
+    auto acc = nx::nextendo::account();
+    if (acc.signed_in) {
+        ImGui::TextUnformatted(trf("online.nextendo.signed_in", acc.username).c_str());
+        if (!acc.friend_code.empty()) ImGui::TextUnformatted(trf("online.nextendo.friend_code", acc.friend_code).c_str());
+        if (button(tr("online.nextendo.sign_out"), kWhite)) {
+            nx::nextendo::sign_out();
+            toast(tr("online.nextendo.sign_out"));
+        }
+        ImGui::Separator();
+        return;
+    }
+    ImGui::TextWrapped("%s", tr("online.rustendo.desc"));
+    const bool busy = nx::nextendo::sign_in_busy();
+    if (button(tr(busy ? "online.nextendo.signing_in" : "online.rustendo.sign_in"), kMint, !busy))
+        nx::nextendo::sign_in_start();
+    static char user_id[24] = {}, token[128] = {};
+    ImGui::TextUnformatted(tr("online.rustendo.user_id"));
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputText("##rustendo_user", user_id, sizeof user_id, ImGuiInputTextFlags_CharsDecimal);
+    nav_item();
+    ImGui::TextUnformatted(tr("online.rustendo.token"));
+    text_small(tr("online.rustendo.token.desc"));
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputText("##rustendo_token", token, sizeof token, ImGuiInputTextFlags_Password);
+    nav_item();
+    if (button(tr("online.rustendo.token_sign_in"), kMint, !busy)) {
+        nx::nextendo::sign_in_with_token(std::strtoull(user_id, nullptr, 10), token);
+        token[0] = 0;  // a game token works once: never kept in the UI
+    }
+    if (!nx::nextendo::last_error().empty()) ImGui::TextWrapped("%s", nx::nextendo::last_error().c_str());
+    ImGui::Separator();
+}
+
 void page_online() {
     heading(tr("tab.online"), tr("online.mode.desc"));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, col4(kPaper));
     ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
     std::string mode = g_game_ini.get("online.mode", "nextendo");
-    if (mode != "local" && mode != "nextendo") mode = "nextendo";
+    if (mode != "local" && mode != "nextendo" && mode != "rustendo") mode = "nextendo";
     ImGui::TextUnformatted(tr("online.mode"));
     text_small(tr("online.mode.desc"));
     if (ImGui::RadioButton(tr("online.mode.nextendo"), mode == "nextendo")) {
         mode = "nextendo";
+        g_game_ini.set("online.mode", mode);
+        if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
+    }
+    nav_item();
+    if (ImGui::RadioButton(tr("online.mode.rustendo"), mode == "rustendo")) {
+        mode = "rustendo";
         g_game_ini.set("online.mode", mode);
         if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
     }
@@ -2616,6 +2683,7 @@ void page_online() {
         }
         ImGui::Separator();
     }
+    if (mode == "rustendo") page_online_rustendo();
     bool on = g_game_ini.get("online.enabled", "0") == "1";
     bool enabled_changed = ImGui::Checkbox(tr("online.enabled"), &on);
     nav_item();

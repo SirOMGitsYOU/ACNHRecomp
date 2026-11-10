@@ -24,9 +24,10 @@ Not yet on Nextendo’s side (server updates): best friends between an emulator 
 | Value | Default | Behaviour |
 |---|---|---|
 | `nextendo` | yes | Sign in with a Nextendo account. Airport Online uses Nextendo. |
-| `local` | | Nextendo off: no account, no online services. |
+| `rustendo` | | Sign in with an account on a Rustendo server (see [Rustendo](#rustendo)). Airport Online uses it. |
+| `local` | | No online server: no account, no online services. |
 
-Local Play peer visits ([LOCAL_PLAY.md](LOCAL_PLAY.md)) are separate and work in both modes when `online.enabled=1`.
+Local Play peer visits ([LOCAL_PLAY.md](LOCAL_PLAY.md)) are separate and work in every mode when `online.enabled=1`.
 
 ## Requirements
 
@@ -65,6 +66,46 @@ Tokens are stored in `<data root>/nextendo_account.json`. Do not share that file
 | `NEXTENDO_BAAS_SIGNING_KEY` | RSA key (PEM text or a path) to sign the `id_token`; also read from `<data root>/nextendo_baas.pem` | a key generated for each run |
 
 ACNH only forwards the `id_token`; the server trusts the `nnex` game token inside it, so the generated key is enough.
+
+## Rustendo
+
+Rustendo is a separate, self-hostable server. Choose **Rustendo** as the network mode (launcher or in-game
+Settings > Online), or in `config.ini`:
+
+```ini
+[online]
+mode = rustendo
+rustendo_api = http://127.0.0.1:8090
+```
+
+`rustendo_api` is the server's website (default `http://127.0.0.1:8090`). Sign in either way:
+
+- **Browser:** sign in on the website and press **Allow** (OAuth with PKCE, loopback redirect; the password never
+  reaches ACNHRecomp).
+- **User id + game token:** the website's Console sign-in card shows your user id and makes a game token (it works
+  once and expires after 30 days). Enter both in the Rustendo settings.
+
+The game's `id_token` comes signed by Rustendo (`GET /api/game/id-token`). Rustendo's sign-in is kept in
+`<data root>/rustendo_account.json`, apart from Nextendo's, so switching modes never sends one server's tokens to the
+other. Rustendo's game servers report who is playing; the client posts `POST /api/presence` only to say when it is in online play (status 2), which friends need to find an open island under Search for a friend.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `RUSTENDO_API` | Rustendo website; also turns Rustendo mode on | config `online.rustendo_api` |
+| `RUSTENDO_SERVER_IP` | Address the Nintendo names resolve to | `127.0.0.1` |
+| `RUSTENDO_NAT_IP` | Second NAT-check address (must differ) | `127.0.0.2` |
+
+### Two copies on one PC
+
+Each copy needs its own data folder (config, save, sign-in). `tools/second_client.ps1` makes one that links the
+game's read-only folders instead of copying them, optionally starting from a save or Island Backup snapshot:
+
+```powershell
+.\tools\second_client.ps1 -Save "$env:LOCALAPPDATA\ACNHRecomp\user\backups\Oasis\<snapshot>"
+$env:NX_DATA_ROOT = "$env:LOCALAPPDATA\ACNHRecomp2"; & "$env:LOCALAPPDATA\ACNHRecomp\build\acnh.exe"
+```
+
+Sign each copy in to a different Rustendo account: an island belongs to the account that first took it online.
 
 ## Clean-room policy
 
