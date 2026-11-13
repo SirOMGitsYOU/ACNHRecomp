@@ -54,6 +54,7 @@ struct HostSock {
     bool nonblock = false;
     sock_t s = kBadSock;
     int type = 0;
+    bool v6 = false;  // a dual-stack IPv6 host socket (dual_stack())
 };
 
 std::mutex g_mu;
@@ -155,6 +156,79 @@ void write_sockaddr(uint64_t addr, uint64_t plen, const sockaddr_in& in) {
     if (len) *len = 16;
 }
 
+// ---- IPv6 servers ----------------------------------------------------------------------------------------------
+//
+// The Switch speaks IPv4 only. When the Rustendo server's address is IPv6 (a host with no public IPv4, as behind
+// CGNAT), the game is given a placeholder IPv4 for it from 198.18.0.0/15 (reserved for benchmarking, so never a real
+// peer), and host sockets are dual-stack IPv6 ones: a placeholder becomes the real address on the way out, IPv4 peers
+// travel as ::ffff:a.b.c.d, and an IPv6 peer that answers comes back as its placeholder. With an IPv4 server nothing
+// changes: plain IPv4 sockets, as before.
+
+bool dual_stack() {
+    static const bool on = nextendo::server_ip().find(':') != std::string::npos ||
+                           nextendo::nat_ip().find(':') != std::string::npos;
+    return on;
+}
+
+constexpr uint32_t kPlaceholderNet = 0xC6120000u, kPlaceholderMask = 0xFFFE0000u;  // 198.18.0.0/15, host order
+std::mutex g_v6_mu;
+std::vector<in6_addr> g_v6;  // placeholder kPlaceholderNet + k + 1 -> g_v6[k]
+
+uint32_t placeholder_for(const in6_addr& a) {  // network order
+    std::lock_guard lk(g_v6_mu);
+    size_t k = 0;
+    while (k < g_v6.size() && std::memcmp(&g_v6[k], &a, sizeof a) != 0) k++;
+    if (k == g_v6.size()) g_v6.push_back(a);
+    return htonl(kPlaceholderNet + uint32_t(k) + 1);
+}
+
+bool real_v6(uint32_t ip_be, in6_addr& out) {
+    const uint32_t ip = ntohl(ip_be);
+    if ((ip & kPlaceholderMask) != kPlaceholderNet) return false;
+    std::lock_guard lk(g_v6_mu);
+    const uint32_t k = ip - kPlaceholderNet - 1;
+    if (k >= g_v6.size()) return false;
+    out = g_v6[k];
+    return true;
+}
+
+// The guest's address as the host socket takes it.
+socklen_t to_host(const HostSock& hs, const sockaddr_in& in, sockaddr_storage& out) {
+    std::memset(&out, 0, sizeof out);
+    if (!hs.v6) {
+        std::memcpy(&out, &in, sizeof in);
+        return sizeof in;
+    }
+    auto& a = reinterpret_cast<sockaddr_in6&>(out);
+    a.sin6_family = AF_INET6;
+    a.sin6_port = in.sin_port;
+    if (!real_v6(in.sin_addr.s_addr, a.sin6_addr) && in.sin_addr.s_addr != INADDR_ANY) {
+        uint8_t* b = reinterpret_cast<uint8_t*>(&a.sin6_addr);  // ::ffff:a.b.c.d
+        b[10] = b[11] = 0xFF;
+        std::memcpy(b + 12, &in.sin_addr.s_addr, 4);
+    }
+    return sizeof a;
+}
+
+// A host address as the guest sees it. False: not an address family the guest knows.
+bool from_host(const sockaddr_storage& ss, sockaddr_in& out) {
+    std::memset(&out, 0, sizeof out);
+    out.sin_family = AF_INET;
+    if (ss.ss_family == AF_INET) {
+        out = reinterpret_cast<const sockaddr_in&>(ss);
+        return true;
+    }
+    if (ss.ss_family != AF_INET6) return false;
+    const auto& a = reinterpret_cast<const sockaddr_in6&>(ss);
+    out.sin_port = a.sin6_port;
+    const uint8_t* b = reinterpret_cast<const uint8_t*>(&a.sin6_addr);
+    static const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
+    static const uint8_t zero[16] = {};
+    if (std::memcmp(b, mapped, 12) == 0) std::memcpy(&out.sin_addr.s_addr, b + 12, 4);
+    else if (std::memcmp(b, zero, 16) != 0) out.sin_addr.s_addr = placeholder_for(a.sin6_addr);
+    return true;
+}
+
 // Guest memory for resolver results. kernel_alloc never frees and rounds to pages, so one arena is cut into slots.
 // shortcut: a slot is reused after kSlots lookups, so a result held past that many resolves is overwritten; give
 // FreeAddrInfo a real allocator if a game ever keeps results that long.
@@ -174,7 +248,10 @@ uint64_t resolver_slot() {
 bool resolve_host(const std::string& host, uint32_t& ip_be) {
     std::string redirected;
     if (nextendo::redirect_host(host, redirected)) {
-        ip_be = inet_addr(redirected.c_str());
+        in6_addr v6{};
+        ip_be = redirected.find(':') != std::string::npos && inet_pton(AF_INET6, redirected.c_str(), &v6) == 1
+                    ? placeholder_for(v6)
+                    : inet_addr(redirected.c_str());
         nextendo::remember_sni(ip_be, host);
         log("hostnet: %s -> %s (Nextendo)", host.c_str(), redirected.c_str());
         return true;
@@ -238,7 +315,17 @@ void hostnet_Socket(CPU& c) {
     net_init();
     const int type = int(c.x[1]) & 0xFF;
     if (type != kSockStream && type != kSockDgram) return ret(c, fail(kEPROTONOSUPPORT));
-    sock_t s = ::socket(AF_INET, type == kSockStream ? SOCK_STREAM : SOCK_DGRAM, 0);
+    const int st = type == kSockStream ? SOCK_STREAM : SOCK_DGRAM;
+    sock_t s = dual_stack() ? ::socket(AF_INET6, st, 0) : kBadSock;
+    if (s != kBadSock) {
+        int off = 0;
+        if (setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&off), sizeof off) != 0) {
+            sock_close(s);
+            s = kBadSock;
+        }
+    }
+    const bool v6 = s != kBadSock;
+    if (!v6) s = ::socket(AF_INET, st, 0);  // an IPv4 server, or a host without IPv6
     if (s == kBadSock) return ret(c, host_fail());
     no_sigpipe(s);
 #ifdef _WIN32
@@ -253,7 +340,7 @@ void hostnet_Socket(CPU& c) {
     std::lock_guard lk(g_mu);
     for (int i = 0; i < kMaxSocks; i++) {
         if (g_socks[i].used) continue;
-        g_socks[i] = HostSock{true, false, s, type};
+        g_socks[i] = HostSock{true, false, s, type, v6};
         return ret(c, i + kFdBase);
     }
     sock_close(s);
@@ -287,9 +374,11 @@ void reap_parked() {
 
 bool park(const HostSock& hs) {
     if (hs.type != kSockDgram) return false;
-    sockaddr_in me{}, peer{};
-    socklen_t l = sizeof me, pl = sizeof peer;
-    if (getsockname(hs.s, reinterpret_cast<sockaddr*>(&me), &l) != 0 || !me.sin_port) return false;
+    sockaddr_storage mine{}, peer{};
+    socklen_t l = sizeof mine, pl = sizeof peer;
+    sockaddr_in me{};
+    if (getsockname(hs.s, reinterpret_cast<sockaddr*>(&mine), &l) != 0 || !from_host(mine, me) || !me.sin_port)
+        return false;
     if (getpeername(hs.s, reinterpret_cast<sockaddr*>(&peer), &pl) == 0) return false;  // connected: a real teardown
     reap_parked();
     const uint16_t port = ntohs(me.sin_port);
@@ -329,7 +418,8 @@ void hostnet_Close(CPU& c) {
 }
 
 void hostnet_Bind(CPU& c) {
-    sock_t s = lookup(int(c.x[0]));
+    HostSock hs;
+    sock_t s = lookup(int(c.x[0]), &hs);
     if (s == kBadSock) return ret(c, fail(kEBADF));
     sockaddr_in in;
     if (!read_sockaddr(c.x[1], c.x[2], in)) return ret(c, fail(kEINVAL));
@@ -347,13 +437,16 @@ void hostnet_Bind(CPU& c) {
             }
         }
     }
-    const int64_t r = bind(s, reinterpret_cast<sockaddr*>(&in), sizeof in) != 0 ? host_fail() : 0;
+    sockaddr_storage host;
+    const socklen_t hl = to_host(hs, in, host);
+    const int64_t r = bind(s, reinterpret_cast<sockaddr*>(&host), hl) != 0 ? host_fail() : 0;
     udp_trace("Bind", int(c.x[0]), &in, r);
     ret(c, r);
 }
 
 void hostnet_Connect(CPU& c) {
-    sock_t s = lookup(int(c.x[0]));
+    HostSock hs;
+    sock_t s = lookup(int(c.x[0]), &hs);
     if (s == kBadSock) return ret(c, fail(kEBADF));
     sockaddr_in in;
     if (!read_sockaddr(c.x[1], c.x[2], in)) return ret(c, fail(kEINVAL));
@@ -361,7 +454,9 @@ void hostnet_Connect(CPU& c) {
     if (traced++ < 64)
         log("hostnet: Connect(%d, %u.%u.%u.%u:%u)", int(c.x[0]), in.sin_addr.s_addr & 0xFF, (in.sin_addr.s_addr >> 8) & 0xFF,
             (in.sin_addr.s_addr >> 16) & 0xFF, in.sin_addr.s_addr >> 24, ntohs(in.sin_port));
-    if (connect(s, reinterpret_cast<sockaddr*>(&in), sizeof in) == 0) return ret(c, 0);
+    sockaddr_storage host;
+    const socklen_t hl = to_host(hs, in, host);
+    if (connect(s, reinterpret_cast<sockaddr*>(&host), hl) == 0) return ret(c, 0);
     int e = host_errno();
     if (e == kEAGAIN) e = kEINPROGRESS;  // Windows: a non-blocking connect reports WSAEWOULDBLOCK
     ret(c, fail(e));
@@ -440,8 +535,10 @@ int64_t do_send(int fd, uint64_t buf, uint64_t n, int flags, uint64_t to, uint64
     if (would_block(s, hs, flags, true)) return fail(kEAGAIN);
     sockaddr_in in;
     const bool has_to = to && read_sockaddr(to, tolen, in);
+    sockaddr_storage host;
+    const socklen_t hl = has_to ? to_host(hs, in, host) : 0;
     const int r = has_to ? int(sendto(s, reinterpret_cast<const char*>(buf), int(n), MSG_NOSIGNAL,
-                                      reinterpret_cast<sockaddr*>(&in), sizeof in))
+                                      reinterpret_cast<sockaddr*>(&host), hl))
                          : int(send(s, reinterpret_cast<const char*>(buf), int(n), MSG_NOSIGNAL));
     const int64_t res = r < 0 ? host_fail() : r;
     if (hs.type == kSockDgram) {
@@ -456,10 +553,12 @@ int64_t do_recv(int fd, uint64_t buf, uint64_t n, int flags, uint64_t from, uint
     sock_t s = lookup(fd, &hs);
     if (s == kBadSock) return fail(kEBADF);
     if (would_block(s, hs, flags, false)) return fail(kEAGAIN);
-    sockaddr_in in{};
-    socklen_t inlen = sizeof in;
+    sockaddr_storage host{};
+    socklen_t inlen = sizeof host;
     const int r = int(recvfrom(s, reinterpret_cast<char*>(buf), int(n), host_flags(flags),
-                               reinterpret_cast<sockaddr*>(&in), &inlen));
+                               reinterpret_cast<sockaddr*>(&host), &inlen));
+    sockaddr_in in{};
+    const bool has_from = r >= 0 && inlen > 0 && from_host(host, in);
 #ifdef _WIN32
     // A datagram bigger than the buffer: Windows fails, the Switch (BSD) truncates.
     if (r < 0 && WSAGetLastError() == WSAEMSGSIZE) return int64_t(n);
@@ -473,7 +572,7 @@ int64_t do_recv(int fd, uint64_t buf, uint64_t n, int flags, uint64_t from, uint
         udp_trace("RecvFrom", fd, &in, r);
         if (r > 0) net_capture("udp", fd, addr_text(in), "in", reinterpret_cast<const uint8_t*>(buf), size_t(r));
     }
-    if (from && inlen >= sizeof(sockaddr_in) && in.sin_family == AF_INET) write_sockaddr(from, fromlen, in);
+    if (from && has_from) write_sockaddr(from, fromlen, in);
     return r;
 }
 
@@ -640,9 +739,11 @@ void hostnet_GetSockOpt(CPU& c) {
 void hostnet_GetSockName(CPU& c) {
     sock_t s = lookup(int(c.x[0]));
     if (s == kBadSock) return ret(c, fail(kEBADF));
+    sockaddr_storage host{};
+    socklen_t l = sizeof host;
+    if (getsockname(s, reinterpret_cast<sockaddr*>(&host), &l) != 0) return ret(c, host_fail());
     sockaddr_in in{};
-    socklen_t l = sizeof in;
-    if (getsockname(s, reinterpret_cast<sockaddr*>(&in), &l) != 0) return ret(c, host_fail());
+    from_host(host, in);
     write_sockaddr(c.x[1], c.x[2], in);
     ret(c, 0);
 }
@@ -650,9 +751,11 @@ void hostnet_GetSockName(CPU& c) {
 void hostnet_GetPeerName(CPU& c) {
     sock_t s = lookup(int(c.x[0]));
     if (s == kBadSock) return ret(c, fail(kEBADF));
+    sockaddr_storage host{};
+    socklen_t l = sizeof host;
+    if (getpeername(s, reinterpret_cast<sockaddr*>(&host), &l) != 0) return ret(c, host_fail());
     sockaddr_in in{};
-    socklen_t l = sizeof in;
-    if (getpeername(s, reinterpret_cast<sockaddr*>(&in), &l) != 0) return ret(c, host_fail());
+    from_host(host, in);
     write_sockaddr(c.x[1], c.x[2], in);
     ret(c, 0);
 }
@@ -751,7 +854,9 @@ uint32_t interface_ip_toward(const char* target) {
 
 uint32_t hostnet_local_ip() {
     net_init();
-    const uint32_t ip = interface_ip_toward(nextendo::server_ip().c_str());
+    const std::string server = nextendo::server_ip();
+    // An IPv6 server says nothing about the IPv4 interface Pia reports: ask toward the internet instead.
+    const uint32_t ip = interface_ip_toward(server.find(':') != std::string::npos ? "8.8.8.8" : server.c_str());
     // A server on this computer (Rustendo on 127.0.0.1) would make the console's address loopback, which Pia never
     // reports as its own (no ReplaceURL, so visitors get no port): use the LAN interface instead. Sends nothing.
     if ((ip & 0xFF) == 127)

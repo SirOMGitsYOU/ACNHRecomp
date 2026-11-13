@@ -114,12 +114,23 @@ std::string dechunk(const std::string& body) {
 std::string replay(const std::string& host, const std::string& request, int* status = nullptr) {
     if (status) *status = 0;
     if (!tls_ready()) return {};
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_port = htons(443);
-    a.sin_addr.s_addr = inet_addr(nextendo::server_ip().c_str());
+    const std::string ip = nextendo::server_ip();
+    sockaddr_storage a{};
+    socklen_t alen = sizeof(sockaddr_in);
+    if (ip.find(':') != std::string::npos) {  // an IPv6 server (hle_hostnet.cpp)
+        auto& a6 = reinterpret_cast<sockaddr_in6&>(a);
+        a6.sin6_family = AF_INET6;
+        a6.sin6_port = htons(443);
+        if (inet_pton(AF_INET6, ip.c_str(), &a6.sin6_addr) != 1) return {};
+        alen = sizeof a6;
+    } else {
+        auto& a4 = reinterpret_cast<sockaddr_in&>(a);
+        a4.sin_family = AF_INET;
+        a4.sin_port = htons(443);
+        a4.sin_addr.s_addr = inet_addr(ip.c_str());
+    }
     net_init();
-    sock_t s = connect_within(a, 5000);
+    sock_t s = connect_within(reinterpret_cast<const sockaddr*>(&a), alen, 5000);
     if (s == kBadSock) return {};
     set_timeout(s, 10000);
     mbedtls_ssl_config conf;

@@ -108,12 +108,12 @@ inline bool wait_socket(sock_t s, bool write, int ms) {
 }
 
 // connect() that gives up after ms, as an unreachable address would take long.
-inline sock_t connect_within(const sockaddr_in& a, int ms) {
-    const sock_t s = socket(AF_INET, SOCK_STREAM, 0);
+inline sock_t connect_within(const sockaddr* a, socklen_t alen, int ms) {
+    const sock_t s = socket(a->sa_family, SOCK_STREAM, 0);
     if (s == kBadSock) return kBadSock;
     no_sigpipe(s);
     set_nonblocking(s, true);
-    connect(s, reinterpret_cast<const sockaddr*>(&a), sizeof a);
+    connect(s, a, alen);
     int err = 1;
     socklen_t len = sizeof err;
     if (!wait_socket(s, true, ms) || getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len) || err) {
@@ -122,6 +122,9 @@ inline sock_t connect_within(const sockaddr_in& a, int ms) {
     }
     set_nonblocking(s, false);
     return s;
+}
+inline sock_t connect_within(const sockaddr_in& a, int ms) {
+    return connect_within(reinterpret_cast<const sockaddr*>(&a), sizeof a, ms);
 }
 
 inline bool resolve(const std::string& host, uint16_t port, sockaddr_in& out) {

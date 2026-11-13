@@ -665,39 +665,6 @@ void set_rustendo_api_override(const std::string& base) {
     g_rustendo_api_override = base;
 }
 
-// Nextendo's game and NAT-check servers. Nextendo publishes no DNS name for them (nextendo.network is its web front),
-// so the addresses in use in November 2026 are built in. They can be changed without a rebuild, as an IP or a host
-// name: NEXTENDO_SERVER_IP / NEXTENDO_NAT_IP, or online.nextendo.server / online.nextendo.nat in config.ini. A name is
-// resolved (and kept) on first use; the built-in address stands in when it does not resolve.
-static std::string address_of(const char* env, const char* key, const char* builtin) {
-    std::string v = env_or(env, "");
-#if !defined(NX_LAUNCHER_UI)
-    if (v.empty()) v = trim(config_get(key, ""));
-#else
-    (void)key;
-#endif
-    if (v.empty()) return builtin;
-    if (v.find_first_not_of("0123456789.") == std::string::npos) return v;  // already an IPv4 address
-    static std::mutex mu;
-    static std::map<std::string, std::string> resolved;
-    std::lock_guard lk(mu);
-    if (auto it = resolved.find(v); it != resolved.end()) return it->second;
-    net_init();
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_family = AF_INET;
-    std::string ip = builtin;
-    if (getaddrinfo(v.c_str(), nullptr, &hints, &res) == 0 && res) {
-        char buf[INET_ADDRSTRLEN] = {};
-        inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, buf, sizeof buf);
-        ip = buf;
-        freeaddrinfo(res);
-    } else {
-        log("nextendo: %s does not resolve; using %s", v.c_str(), builtin);
-    }
-    resolved[v] = ip;
-    return ip;
-}
-
 // The Rustendo website the player chose (env RUSTENDO_API, else the launcher's or config online.rustendo_api, else the
 // local default). Named explicitly by the player, so any http(s) address is taken as given.
 std::string rustendo_api() {
@@ -729,8 +696,9 @@ std::string auth_base() { return is_rustendo() ? api_base() : checked_base("NEXT
 
 // Nextendo's game and NAT-check servers. Nextendo publishes no DNS name for them (nextendo.network is its web front),
 // so the addresses in use in November 2026 are built in. They can be changed without a rebuild, as an IP or a host
-// name: NEXTENDO_SERVER_IP / NEXTENDO_NAT_IP, or online.nextendo.server / online.nextendo.nat in config.ini. A name is
-// resolved (and kept) on first use; the built-in address stands in when it does not resolve.
+// name: NEXTENDO_SERVER_IP / NEXTENDO_NAT_IP, or online.nextendo.server / online.nextendo.nat in config.ini (Rustendo:
+// RUSTENDO_SERVER_IP / RUSTENDO_NAT_IP, online.rustendo.server / online.rustendo.nat). A name is resolved (and kept)
+// on first use; the built-in address stands in when it does not resolve. An IPv6 address works too (hle_hostnet.cpp).
 static std::string address_of(const char* env, const char* key, const char* builtin) {
     std::string v = env_or(env, "");
 #if !defined(NX_LAUNCHER_UI)
@@ -740,32 +708,38 @@ static std::string address_of(const char* env, const char* key, const char* buil
 #endif
     if (v.empty()) return builtin;
     if (v.find_first_not_of("0123456789.") == std::string::npos) return v;  // already an IPv4 address
+    if (v.find(':') != std::string::npos) return v;  // an IPv6 address (hle_hostnet.cpp maps it for the game)
     static std::mutex mu;
     static std::map<std::string, std::string> resolved;
     std::lock_guard lk(mu);
     if (auto it = resolved.find(v); it != resolved.end()) return it->second;
     net_init();
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_family = AF_INET;
     std::string ip = builtin;
-    if (getaddrinfo(v.c_str(), nullptr, &hints, &res) == 0 && res) {
-        char buf[INET_ADDRSTRLEN] = {};
-        inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, buf, sizeof buf);
+    bool found = false;
+    for (const int family : {AF_INET, AF_INET6}) {  // IPv6 only when the name has no IPv4 address (IPv6-only servers)
+        addrinfo hints{}, *res = nullptr;
+        hints.ai_family = family;
+        if (getaddrinfo(v.c_str(), nullptr, &hints, &res) != 0 || !res) continue;
+        char buf[INET6_ADDRSTRLEN] = {};
+        const void* a = family == AF_INET ? static_cast<const void*>(&reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr)
+                                          : static_cast<const void*>(&reinterpret_cast<sockaddr_in6*>(res->ai_addr)->sin6_addr);
+        inet_ntop(family, a, buf, sizeof buf);
         ip = buf;
         freeaddrinfo(res);
-    } else {
-        log("nextendo: %s does not resolve; using %s", v.c_str(), builtin);
+        found = true;
+        break;
     }
+    if (!found) log("nextendo: %s does not resolve; using %s", v.c_str(), builtin);
     resolved[v] = ip;
     return ip;
 }
 
 std::string server_ip() {
-    return is_rustendo() ? env_or("RUSTENDO_SERVER_IP", "127.0.0.1")
+    return is_rustendo() ? address_of("RUSTENDO_SERVER_IP", "online.rustendo.server", "127.0.0.1")
                          : address_of("NEXTENDO_SERVER_IP", "online.nextendo.server", "51.178.29.194");
 }
 std::string nat_ip() {
-    return is_rustendo() ? env_or("RUSTENDO_NAT_IP", "127.0.0.2")
+    return is_rustendo() ? address_of("RUSTENDO_NAT_IP", "online.rustendo.nat", "127.0.0.2")
                          : address_of("NEXTENDO_NAT_IP", "online.nextendo.nat", "164.132.111.120");
 }
 
