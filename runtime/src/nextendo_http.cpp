@@ -138,7 +138,7 @@ int run_curl(const std::vector<std::string>& argv) {
 
 HttpResponse http_request(const std::string& method, const std::string& url,
                           const std::map<std::string, std::string>& headers, const std::string& body,
-                          const std::string& content_type) {
+                          const std::string& content_type, int max_seconds) {
     HttpResponse r;
 #if defined(__ANDROID__)
     // No curl on a phone: HttpURLConnection (platform_android.cpp), with the same headers and body.
@@ -166,7 +166,7 @@ HttpResponse http_request(const std::string& method, const std::string& url,
     }
 
     // Use -D for status (not -w %{http_code}): cmd-free CreateProcess still avoids % pitfalls if PATH wraps curl.
-    std::vector<std::string> argv = {"curl", "-sS", "-L", "--connect-timeout", "15", "--max-time", "45",
+    std::vector<std::string> argv = {"curl", "-sS", "-L", "--connect-timeout", "15", "--max-time", std::to_string(max_seconds),
                                      "-D", hdr_path, "-o", out_path, "-X", method};
     // Headers go through a file (-H @file): on the command line the bearer token would be readable by any process
     // that lists command lines.

@@ -43,5 +43,7 @@ std::string backup_now(std::string* error, bool automatic = false);
 std::vector<std::string> list_backups();
 bool restore_backup(const std::string& name, std::string* error);  // a list_backups name; backs up the current save first
 std::string backups_folder();  // <data root>/user/backups/<island folder> of the island being played
+// A list_backups backup as a zip at `zip`, files at its root: what import_save takes back.
+bool zip_backup(const std::string& name, const std::string& zip, std::string* error);
 
 }  // namespace nx::saves

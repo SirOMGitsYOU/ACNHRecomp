@@ -16,6 +16,7 @@ struct HttpResponse {
 // GET or POST. headers: name -> value. body empty => GET.
 HttpResponse http_request(const std::string& method, const std::string& url,
                           const std::map<std::string, std::string>& headers = {},
-                          const std::string& body = "", const std::string& content_type = "");
+                          const std::string& body = "", const std::string& content_type = "",
+                          int max_seconds = 45);
 
 }  // namespace nx::nextendo

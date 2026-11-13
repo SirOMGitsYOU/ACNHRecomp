@@ -1041,6 +1041,70 @@ void refresh_in_background() {
 
 }  // namespace
 
+// ---- Rustendo cloud saves ---------------------------------------------------------------------------------------
+
+namespace {
+
+std::string cloud_save_path(uint64_t title_id) {
+    char id[17];
+    std::snprintf(id, sizeof id, "%016llx", (unsigned long long)title_id);
+    return "/api/saves/" + std::string(id);
+}
+
+// A save is 10-40 MB: give it far longer than the 45 s an API call gets.
+constexpr int kCloudSaveSeconds = 600;
+
+// One request with the access token, refreshed and retried once on 401.
+HttpResponse cloud_request(const std::string& method, const std::string& path, const std::string& body,
+                           const std::map<std::string, std::string>& extra, std::string& error) {
+    if (!is_rustendo() || account().access_token.empty()) {
+        error = "not signed in to Rustendo";
+        return {};
+    }
+    auto send = [&] {
+        auto h = bearer(account().access_token);
+        h.insert(extra.begin(), extra.end());
+        return http_request(method, api_base() + path, h, body, body.empty() ? "" : "application/octet-stream",
+                            kCloudSaveSeconds);
+    };
+    auto r = send();
+    if (r.status == 401 && refresh_session()) r = send();
+    if (r.status < 200 || r.status >= 300)
+        error = r.status ? "server answered " + std::to_string(r.status) : (r.error.empty() ? "no answer" : r.error);
+    return r;
+}
+
+}  // namespace
+
+bool cloud_save_put(uint64_t title_id, const std::string& bytes, const std::string& info, std::string& error) {
+    if (bytes.empty()) return error = "empty save", false;
+    const auto r = cloud_request("PUT", cloud_save_path(title_id), bytes, {{"X-Save-Info", info}}, error);
+    return r.status >= 200 && r.status < 300;
+}
+
+bool cloud_save_get(uint64_t title_id, std::string& bytes, std::string& error) {
+    auto r = cloud_request("GET", cloud_save_path(title_id), "", {}, error);
+    if (r.status != 200) return false;
+    bytes = std::move(r.body);
+    return true;
+}
+
+// GET /api/saves: {"saves":[{application_id, size, modified, info}, ...]}.
+bool cloud_save_info(uint64_t title_id, bool& found, CloudSave& out) {
+    found = false;
+    std::string error;
+    const auto r = cloud_request("GET", "/api/saves", "", {}, error);
+    if (r.status != 200) return false;
+    const std::string id = cloud_save_path(title_id).substr(sizeof "/api/saves/" - 1);
+    for (const std::string& o : json_objects(json_member(r.body, "saves"))) {
+        if (json_str(o, "application_id") != id) continue;
+        out.modified = json_u64(o, "modified");
+        out.info = json_str(o, "info");
+        found = true;
+    }
+    return true;
+}
+
 bool fetch_friends(std::vector<Friend>& out) {
     FriendLists lists;
     const bool ok = fetch_friend_lists(lists);

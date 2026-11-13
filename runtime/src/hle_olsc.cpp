@@ -15,6 +15,9 @@
 // A restore the game asks for (cmd 26) swaps the save under the running game, like the settings screen's restore: the
 // settings screen then opens and only offers to quit, so the game cannot write the old island over the restored one.
 //
+// Signed in to Rustendo (a self-hosted server), each Island Backup is also stored there, and the restore list offers
+// that copy when it is newer: see "the copy on Rustendo" below.
+//
 // Local state, per island (user/backups/<island folder>/island_backup.txt): the setting (each save has its own Island
 // Backup option, which the game sends at boot), the game's 0x400-byte custom block (island name and the like, shown in
 // the restore list), and the Island Backup's name, time, custom block and main.dat stamp.
@@ -38,6 +41,7 @@
 
 #include "ipc.h"
 #include "kernel.h"
+#include "nextendo.h"
 #include "platform.h"
 #include "saves.h"
 #include "ui/ui.h"
@@ -68,6 +72,7 @@ struct State {
     int64_t time = 0;     // posix time of the Island Backup
     std::string backup_custom;  // base64 of the custom block when it was made
     std::string stamp;    // main.dat size and write time when it was made
+    std::string uploaded;  // the backup last stored on Rustendo, "" if none
 };
 
 std::mutex g_state_lock;
@@ -87,6 +92,7 @@ State load_state() {
         else if (k == "time") s.time = std::atoll(v.c_str());
         else if (k == "backup_custom") s.backup_custom = v;
         else if (k == "stamp") s.stamp = v;
+        else if (k == "uploaded") s.uploaded = v;
     }
     return s;
 }
@@ -99,7 +105,7 @@ void save_state(const State& s) {
     {
         std::ofstream out(tmp, std::ios::trunc);
         out << "setting=" << s.setting << "\ncustom=" << s.custom << "\nbackup=" << s.backup << "\ntime=" << s.time
-            << "\nbackup_custom=" << s.backup_custom << "\nstamp=" << s.stamp << "\n";
+            << "\nbackup_custom=" << s.backup_custom << "\nstamp=" << s.stamp << "\nuploaded=" << s.uploaded << "\n";
         if (!out) return;
     }
     fs::rename(tmp, p, ec);
@@ -233,6 +239,105 @@ uint32_t transfer(uint32_t (*work)()) {
     return rc;
 }
 
+// ---- the copy on Rustendo -------------------------------------------------------------------------------------
+//
+// Signed in to Rustendo, each Island Backup is also stored there (the website's /api/saves, one per account), as a
+// zip of its folder with "<time>:<custom block base64>" as its info. The upload runs on its own thread after the
+// backup, never inside the game's wait for it; one that failed (offline, server down) is retried at the next boot.
+// The restore list offers the copy on Rustendo when it is newer than this computer's (another computer's island, or
+// no local backup at all).
+
+bool cloud_on() { return nextendo::is_rustendo() && nextendo::signed_in(); }
+
+std::string utf8(const fs::path& p) {
+    const auto u = p.u8string();  // C++20: std::u8string
+    return std::string(u.begin(), u.end());
+}
+
+fs::path temp_zip(const char* what) {
+    std::error_code ec;
+    return fs::temp_directory_path(ec) / (std::string("acnhrecomp_") + what + "_" +
+                                          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                                          ".zip");
+}
+
+std::atomic<bool> g_uploading{false};
+
+void upload_now() {
+    const State s = get_state();
+    if (!cloud_on() || s.backup.empty() || s.uploaded == s.backup) return;
+    const fs::path zip = temp_zip("upload");
+    std::string err;
+    std::string bytes;
+    if (saves::zip_backup(s.backup, utf8(zip), &err)) {
+        std::ifstream in(zip, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    std::error_code ec;
+    fs::remove(zip, ec);
+    if (bytes.empty()) {
+        log("olsc: cannot zip the Island Backup %s for Rustendo: %s", s.backup.c_str(), err.c_str());
+        return;
+    }
+    if (!nextendo::cloud_save_put(nextendo::kAcnhTitleId, bytes, std::to_string(s.time) + ":" + s.backup_custom, err)) {
+        log("olsc: Island Backup not stored on Rustendo (%s): retried at the next boot", err.c_str());
+        return;
+    }
+    update_state([&](State& st) {
+        if (st.backup == s.backup) st.uploaded = s.backup;
+    });
+    log("olsc: Island Backup %s stored on Rustendo (%zu KB)", s.backup.c_str(), bytes.size() / 1024);
+}
+
+void upload_async() {
+    if (!cloud_on() || g_uploading.exchange(true)) return;
+    std::thread([] {
+        upload_now();
+        g_uploading = false;
+    }).detach();
+}
+
+std::atomic<int64_t> g_cloud_time{0};  // the restore list offered Rustendo's copy, made at this time; 0: the local one
+
+// Rustendo's copy, when it is newer than `local_time` (0: no local backup). Blocking.
+bool cloud_backup(int64_t local_time, Backup& out) {
+    if (!cloud_on()) return false;
+    bool found = false;
+    nextendo::CloudSave c;
+    if (!nextendo::cloud_save_info(nextendo::kAcnhTitleId, found, c) || !found) return false;
+    const size_t colon = c.info.find(':');
+    out.time = colon == std::string::npos ? int64_t(c.modified) : std::atoll(c.info.substr(0, colon).c_str());
+    if (out.time <= local_time) return false;
+    out.id = uint64_t(out.time);
+    out.custom = colon == std::string::npos ? std::vector<uint8_t>() : b64_decode(c.info.substr(colon + 1));
+    return true;
+}
+
+uint32_t restore_cloud() {
+    std::string bytes, err;
+    if (!nextendo::cloud_save_get(nextendo::kAcnhTitleId, bytes, err)) {
+        log("olsc: cannot download the Island Backup from Rustendo: %s", err.c_str());
+        return kBadBackup;
+    }
+    const fs::path zip = temp_zip("download");
+    {
+        std::ofstream out(zip, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), std::streamsize(bytes.size()));
+        if (!out) err = "cannot write " + utf8(zip);
+    }
+    const bool ok = err.empty() && saves::import_save(utf8(zip), &err);  // backs up the current save first
+    std::error_code ec;
+    fs::remove(zip, ec);
+    if (!ok) {
+        log("olsc: cannot restore the Island Backup from Rustendo: %s", err.c_str());
+        return kBadBackup;
+    }
+    update_state([](State& st) { st.stamp = save_stamp(); });  // the restored save is the backup: nothing new
+    log("olsc: restored the Island Backup from Rustendo");
+    ui::ui_must_quit();
+    return 0;
+}
+
 bool backup_due() {
     const State s = get_state();
     return s.setting == 1 && !g_transfer.load() && saves::has_save() && save_stamp() != s.stamp;
@@ -242,6 +347,7 @@ void backup_if_changed() {
     if (!backup_due()) return;
     std::thread([] {
         if (const uint32_t rc = transfer(make_backup)) log("olsc: automatic Island Backup failed (%#x)", rc);
+        upload_async();
     }).detach();
 }
 
@@ -331,8 +437,15 @@ std::shared_ptr<Service> make_list_async() {
     auto a = std::make_shared<Async>();
     auto items = std::make_shared<std::vector<Backup>>();
     auto s = make_async("olsc:IAsyncListDownloadableSaveDataBackupInfo", a, [items] {
-        Backup b;
-        if (current_backup(b)) items->push_back(b);
+        Backup b, cloud;
+        const bool local = current_backup(b);
+        if (cloud_backup(local ? b.time : 0, cloud)) {
+            g_cloud_time = cloud.time;
+            items->push_back(cloud);
+        } else {
+            g_cloud_time = 0;
+            if (local) items->push_back(b);
+        }
         return 0u;
     });
     s->cmds[100] = [a, items](IpcCtx& ctx) {  // GetCount
@@ -357,6 +470,7 @@ std::shared_ptr<Service> make_olsc(const char* name) {
     auto s = std::make_shared<Service>(name);
     s->cmds[0] = [](IpcCtx&) {  // Initialize
         backup_if_changed();
+        upload_async();  // one that failed last time
         return 0u;
     };
     s->cmds[10] = [](IpcCtx& ctx) {           // UpdateDataNewnessAsync
@@ -404,11 +518,15 @@ std::shared_ptr<Service> make_olsc(const char* name) {
         return 0u;
     };
     s->cmds[26] = [](IpcCtx& ctx) {  // DownloadSaveDataBackupAsync(uid, backup id): there is only one backup
-        ctx.push_object(traced(make_transfer_async(restore)));
+        ctx.push_object(traced(make_transfer_async(+[] { return g_cloud_time ? restore_cloud() : restore(); })));
         return 0u;
     };
     s->cmds[27] = [](IpcCtx& ctx) {  // UploadSaveDataBackupAsync(uid)
-        ctx.push_object(traced(make_transfer_async(make_backup)));
+        ctx.push_object(traced(make_transfer_async(+[] {
+            const uint32_t rc = make_backup();
+            upload_async();
+            return rc;
+        })));
         return 0u;
     };
     return s;

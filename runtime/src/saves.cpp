@@ -860,21 +860,39 @@ std::vector<std::string> list_backups() {
     }
 }
 
+// The folder of "<island folder>/<backup>", as list_backups gives them: nothing that could leave user/backups.
+// Under g_lock.
+static bool backup_path(const std::string& name, fs::path& p, std::string* error) {
+    const size_t slash = name.find('/');
+    const std::string folder = name.substr(0, slash);
+    const std::string backup = slash == std::string::npos ? std::string() : name.substr(slash + 1);
+    if (folder.empty() || folder == "." || folder == ".." || backup.find('/') != std::string::npos ||
+        name.find_first_of("\\:") != std::string::npos || !backup_name(backup))
+        return set(error, "invalid backup name"), false;
+    p = backups_root() / u8(folder) / u8(backup);
+    if (!is_dir(p)) return set(error, "backup not found: " + name), false;
+    return true;
+}
+
 bool restore_backup(const std::string& name, std::string* error) {
     try {
         std::lock_guard lk(g_lock);
-        // "<island folder>/<backup>", as list_backups gives them: nothing that could leave user/backups.
-        const size_t slash = name.find('/');
-        const std::string folder = name.substr(0, slash);
-        const std::string backup = slash == std::string::npos ? std::string() : name.substr(slash + 1);
-        if (folder.empty() || folder == "." || folder == ".." || backup.find('/') != std::string::npos ||
-            name.find_first_of("\\:") != std::string::npos || !backup_name(backup))
-            return set(error, "invalid backup name"), false;
-        fs::path p = backups_root() / u8(folder) / u8(backup);
-        if (!is_dir(p)) return set(error, "backup not found: " + name), false;
+        fs::path p;
+        if (!backup_path(name, p, error)) return false;
         // The backup is staged before the current save is backed up, so the pruning that follows that backup cannot
         // delete the one being restored.
         return import_locked(p, error);
+    } catch (...) {
+        set(error, "unexpected error");
+        return false;
+    }
+}
+
+bool zip_backup(const std::string& name, const std::string& zip, std::string* error) {
+    try {
+        std::lock_guard lk(g_lock);  // the pruning cannot delete it while it is read
+        fs::path p;
+        return backup_path(name, p, error) && zip_write(p, u8(zip), error);
     } catch (...) {
         set(error, "unexpected error");
         return false;

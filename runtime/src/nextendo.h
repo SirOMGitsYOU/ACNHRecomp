@@ -123,6 +123,20 @@ void presence_start();
 void presence_stop();
 void presence_set_playing(bool playing);
 
+// ---- Rustendo cloud saves (runtime only) ---------------------------------------------------------------------
+
+// The website's /api/saves: one archive per title for the signed-in Rustendo account, with a short info text the
+// client chooses. Blocking HTTP: call from a worker thread. False (error says why) when not signed in to Rustendo,
+// or the server did not take it / has none.
+bool cloud_save_put(uint64_t title_id, const std::string& bytes, const std::string& info, std::string& error);
+bool cloud_save_get(uint64_t title_id, std::string& bytes, std::string& error);
+struct CloudSave {
+    uint64_t modified = 0;  // posix time the server stored it
+    std::string info;
+};
+// found: false when the account has no save for this title. Returns false when the server could not be asked.
+bool cloud_save_info(uint64_t title_id, bool& found, CloudSave& out);
+
 // ---- DNS redirect ---------------------------------------------------------------------------------------------
 
 enum class RedirectTarget { None, Server, Nat };
