@@ -30,7 +30,7 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
 | UI renderizada corretamente (elementos de layout conferidos por dump) | ✅ |
 | Relógio local (data/hora do computador, fuso do sistema) | ✅ ("Good afternoon!" à tarde) |
 | Save do aparelho (`MountDeviceSaveData`) em `private/acnh/user/device_save` | ✅ monta; gravação a confirmar |
-| BCAT (conteúdo entregue pela Nintendo): vazio, como console nunca conectado | ✅ |
+| BCAT (conteúdo entregue pela Nintendo): sincronizado do Rustendo (`/api/bcat`) a cada boot; vazio fora do Rustendo | ✅ |
 | **UI na tela**: tela de carregamento, diálogos do Timmy | ✅ |
 | **Criação de personagem** (registro Nook Inc.) com o teclado do próprio jogo | ✅ digitação funciona |
 | Renderização 3D (cena do oceano ao entardecer, terreno em alvos menores) | ✅ conferida por dump |
@@ -68,7 +68,7 @@ Medido no dump 3.0.2, Linux x86-64 (Ubuntu 26.04, clang 21, Intel Iris Xe / Mesa
     "The system is set to a date outside the supported range." (`runtime/src/hle_time.cpp`).
 16. Save do aparelho: `MountDeviceSaveData`, `Get/ExtendDeviceSaveDataSize`, `Commit`, `RenameDirectory`,
     `CleanDirectoryRecursively` (`runtime/src/hle_fs.cpp`).
-17. `nn::bcat` (`runtime/src/hle_bcat.cpp`): armazenamento de entrega vazio.
+17. `nn::bcat` (`runtime/src/hle_bcat.cpp`): armazenamento de entrega em `<data root>/bcat/<title id>/`, sincronizado do Rustendo (eventos BCAT); vazio fora do Rustendo.
 18. Vulkan: recursos 1.1/1.2 (`shaderDrawParameters`) e `VK_EXT_fragment_shader_interlock` habilitados; sem eles
     as camadas de validação acusavam os shaders traduzidos.
 19. Tela preta: o "clear on bind" do motor (`main+37fb390`) limpava o alvo HDR a cada troca de alvo da UI, e a

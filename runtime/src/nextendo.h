@@ -137,6 +137,19 @@ struct CloudSave {
 // found: false when the account has no save for this title. Returns false when the server could not be asked.
 bool cloud_save_info(uint64_t title_id, bool& found, CloudSave& out);
 
+// ---- Rustendo BCAT (runtime only) ----------------------------------------------------------------------------
+
+// The website's /api/bcat: the delivery cache files the server delivers today (no sign-in needed). Blocking HTTP.
+struct BcatFile {
+    std::string directory, name;
+    uint64_t size = 0;
+    std::string digest;  // 32 hex digits
+};
+// out empty when the server delivers nothing for the title. False (error says why) when it could not be asked.
+bool bcat_list(uint64_t title_id, std::vector<BcatFile>& out, std::string& error);
+bool bcat_get(uint64_t title_id, const std::string& directory, const std::string& name, std::string& bytes,
+              std::string& error);
+
 // ---- DNS redirect ---------------------------------------------------------------------------------------------
 
 enum class RedirectTarget { None, Server, Nat };

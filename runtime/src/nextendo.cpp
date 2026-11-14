@@ -1079,6 +1079,40 @@ bool cloud_save_info(uint64_t title_id, bool& found, CloudSave& out) {
     return true;
 }
 
+// ---- Rustendo BCAT -----------------------------------------------------------------------------------------------
+
+namespace {
+std::string bcat_path(uint64_t title_id) {
+    char id[17];
+    std::snprintf(id, sizeof id, "%016llx", (unsigned long long)title_id);
+    return "/api/bcat/" + std::string(id);
+}
+}  // namespace
+
+// GET /api/bcat/<title>: {"set": "<date>", "files": [{directory, name, size, digest}, ...]}. 404: nothing delivered.
+bool bcat_list(uint64_t title_id, std::vector<BcatFile>& out, std::string& error) {
+    out.clear();
+    if (!is_rustendo()) return error = "not playing on Rustendo", false;
+    const auto r = http_request("GET", api_base() + bcat_path(title_id));
+    if (r.status == 404) return true;
+    if (r.status != 200)
+        return error = r.status ? "server answered " + std::to_string(r.status) : (r.error.empty() ? "no answer" : r.error),
+               false;
+    for (const std::string& o : json_objects(json_member(r.body, "files")))
+        out.push_back({json_str(o, "directory"), json_str(o, "name"), json_u64(o, "size"), json_str(o, "digest")});
+    return true;
+}
+
+bool bcat_get(uint64_t title_id, const std::string& directory, const std::string& name, std::string& bytes,
+              std::string& error) {
+    auto r = http_request("GET", api_base() + bcat_path(title_id) + "/" + directory + "/" + name);
+    if (r.status != 200)
+        return error = r.status ? "server answered " + std::to_string(r.status) : (r.error.empty() ? "no answer" : r.error),
+               false;
+    bytes = std::move(r.body);
+    return true;
+}
+
 bool fetch_friends(std::vector<Friend>& out) {
     FriendLists lists;
     const bool ok = fetch_friend_lists(lists);
