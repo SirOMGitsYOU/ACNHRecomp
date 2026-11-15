@@ -8,7 +8,7 @@
 // How the game reads a push (read from the 3.0.3 code): Receive fills a 0x10a0-byte record whose payload, at +0xa0
 // with its length (u16) at +0x6, is base64 text; decoded, it is a MessagePack map {"type", "action", "receiver_user_id",
 // "target_user_id"}. Type "friend" with action "add"/"delete" changes a best friend, "sent_friend_request" /
-// "received_friend_request" refresh the request lists. The game reads until Receive answers 0x69a (nothing left);
+// "received_friend_request" refresh the request lists, "message_card" the received message cards. The game reads until Receive answers 0x69a (nothing left);
 // any other failure aborts it.
 //
 // Watching the server: the game's own GET requests for its best friends and requests (hle_ssl.cpp hands every request
@@ -60,7 +60,7 @@ struct Watched {
 std::mutex g_mu;
 std::string g_host;
 uint64_t g_me = 0;                       // the player's island user id
-std::map<std::string, Watched> g_watch;  // "friends", "send", "receive"
+std::map<std::string, Watched> g_watch;  // "friends", "send", "receive", "cards"
 std::deque<std::string> g_queue;         // push payloads not yet received
 std::shared_ptr<EventState> g_event = std::make_shared<EventState>();
 std::atomic<bool> g_polling{false};
@@ -258,8 +258,18 @@ void poll_once() {
         Watched& w = g_watch[key];
         if (w.request != req) continue;  // the game read this list again meanwhile: its copy is newer
         if (w.known && g_me) {  // a push names its receiver: wait until the game has shown who the player is
-            const char* type = key == "friends" ? "friend" : key == "send" ? "sent_friend_request" : "received_friend_request";
+            const char* type = key == "friends" ? "friend"
+                               : key == "cards" ? "message_card"
+                               : key == "send"  ? "sent_friend_request"
+                                                : "received_friend_request";
             bool changed = false;
+            if (key == "cards") {  // a card arrived: one push, the game re-reads its list (ids mix cards and senders)
+                bool arrived = false;
+                for (uint64_t id : now) arrived |= !w.ids.count(id);
+                if (arrived) push(type, "add", 0), pushed = true;
+                w.ids = now, w.body = body;
+                continue;
+            }
             for (uint64_t id : now)
                 if (!w.ids.count(id)) push(type, "add", id), changed = true;
             for (uint64_t id : w.ids)
@@ -362,6 +372,7 @@ void npns_observe_request(const std::string& host, const uint8_t* p, size_t n) {
     const char* key = line.rfind("GET /api/v1/friends ", 0) == 0                          ? "friends"
                       : line.rfind("GET /api/v1/friend_requests?type=send ", 0) == 0    ? "send"
                       : line.rfind("GET /api/v1/friend_requests?type=receive ", 0) == 0 ? "receive"
+                      : line.rfind("GET /api/v1/message_cards?", 0) == 0                ? "cards"
                                                                                         : nullptr;
     // A request the player sends: the server confirms it with a push to the sender (the game shows "processing"
     // until then). Sent shortly after, once the server has stored it.
