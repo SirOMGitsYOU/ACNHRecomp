@@ -1430,13 +1430,6 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
             upload = false;
         }
     }
-    // A resized screen target the CPU fills (textures_written before its image existed: Happy Home Paradise decodes
-    // a photo's JPEG, then the texture gets its image): back at the game's size, uploaded.
-    if (upload && img->uw && (img->sx != 1.0f || img->sy != 1.0f) && cpu_written(t->memory, t->memory + t->storage_size)) {
-        keep_game_size(*t);
-        if (!(img = image_of(texture))) return nullptr;
-        upload = !img->rendered && !img->uploaded;
-    }
     // A resized screen target (nvn_ultrawide.cpp): guest memory holds the game's size, not this one. Cleared.
     if (upload && img->uw && (img->sx != 1.0f || img->sy != 1.0f)) {
         static int logged = 0;
