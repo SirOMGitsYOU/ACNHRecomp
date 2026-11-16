@@ -6,9 +6,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <set>
 
 #include "nvn.h"
+#include "nvn_pipeline.h"
 #include "nvn_ultrawide.h"
 #include "platform.h"
 
@@ -729,10 +731,30 @@ NX_HLE("nvnDeviceGetImageHandle", DeviceGetImageHandle);
 
 namespace nx {
 
+namespace {
+// The latest ranges textures_written reported, [lo, hi): a texture made over one later (or given its image later) is
+// still filled by the CPU. shortcut: kept until pushed out by newer ones, so a target the heap later reuses that
+// memory for stays at the game's size if it is uploaded before it is drawn; a free hook would end them.
+std::mutex g_cpu_ranges_lock;
+std::deque<std::pair<uint64_t, uint64_t>> g_cpu_ranges;
+}  // namespace
+
+bool nvn::cpu_written(uint64_t lo, uint64_t hi) {
+    std::lock_guard lk(g_cpu_ranges_lock);
+    for (auto& [a, b] : g_cpu_ranges)
+        if (a < hi && lo < b) return true;
+    return false;
+}
+
 // Something outside the GPU wrote guest memory [addr, addr + size) that textures may sample (a movie decoder's frame,
 // which the console's NVDEC writes without a flush from the game): those textures are uploaded again.
 void textures_written(uint64_t addr, uint64_t size) {
     using namespace nx::nvn;
+    if (std::lock_guard lk(g_cpu_ranges_lock);
+        std::find(g_cpu_ranges.begin(), g_cpu_ranges.end(), std::pair{addr, addr + size}) == g_cpu_ranges.end()) {
+        g_cpu_ranges.emplace_back(addr, addr + size);
+        if (g_cpu_ranges.size() > 16) g_cpu_ranges.pop_front();
+    }
     std::lock_guard lk(objects_lock());
     int found = 0, imaged = 0;
     for (auto& [pool, guests] : pool_textures())
