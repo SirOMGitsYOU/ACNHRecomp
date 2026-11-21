@@ -346,11 +346,12 @@ bool oauth_listen(const std::string& expect_state, std::string& code_out, int ti
         return false;
     }
     buf[n] = 0;
-    const char* ok =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
-        "<!doctype html><html><body><p>Signed in to Nextendo. You can close this window and return to "
-        "ACNHRecomp.</p></body></html>";
-    send(client, ok, int(std::strlen(ok)), MSG_NOSIGNAL);
+    const std::string ok =
+        std::string("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
+                    "<!doctype html><html><body><p>Signed in to ") +
+        (is_rustendo() ? "Rustendo" : "Nextendo") +
+        ". You can close this window and return to ACNHRecomp.</p></body></html>";
+    send(client, ok.data(), int(ok.size()), MSG_NOSIGNAL);
     sock_close(client);
     std::string req(buf);
     size_t q = req.find('?');
@@ -677,6 +678,12 @@ void set_rustendo_api_override(const std::string& base) {
 }
 
 void set_rustendo_custom_override(bool custom) { g_rustendo_custom_override = custom ? 1 : 0; }
+
+// shortcut: the origin address is built in (as kLiveRustendoIp); move it to DNS if the server ever changes address.
+std::string rustendo_origin_resolve() {
+    if (!is_rustendo() || rustendo_custom()) return {};
+    return std::string("rustendo.network:443:") + kLiveRustendoIp;
+}
 
 // A custom Rustendo server (online.rustendo.custom, or env RUSTENDO_API: a developer's) instead of the live one.
 bool rustendo_custom() {
