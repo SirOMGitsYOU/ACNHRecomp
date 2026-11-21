@@ -624,7 +624,9 @@ bool signed_in() {
 constexpr const char* kDefaultClientId = "nxc_t63scKVq2hF1";
 
 std::string client_id() {
-    if (is_rustendo()) return "acnhrecomp";  // Rustendo needs no registration: any loopback app may ask
+    // The live Rustendo server knows ACNHRecomp by its registered app id; a custom server needs no registration (any
+    // loopback app may ask), so the name is only a label there.
+    if (is_rustendo()) return rustendo_custom() ? "acnhrecomp" : "c986427c429b4ae3";
     if (const char* e = std::getenv("NEXTENDO_CLIENT_ID"); e && e[0]) return e;
     {
         std::lock_guard lk(g_mu);
