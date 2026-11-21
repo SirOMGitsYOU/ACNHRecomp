@@ -82,10 +82,13 @@ mode = rustendo
 rustendo.custom = 1
 rustendo_api = http://127.0.0.1:8090
 rustendo.server = 127.0.0.1
+rustendo.tls_pins = <base64 sha256 of the server's public key>
 ```
 
 `rustendo_api` is the server's website, for browser sign-in (default `http://127.0.0.1:8090`); `rustendo.server` the
-address the Nintendo names resolve to (an IP, or a host name not behind a proxy). Sign in in the browser: sign in on
+address the Nintendo names resolve to (an IP, or a host name not behind a proxy). The game servers' TLS key is pinned:
+the live server's is built in; a custom server's goes in `rustendo.tls_pins` (comma-separated; the log names a refused
+key). Sign in in the browser: sign in on
 the website and press **Allow** (OAuth with PKCE, loopback redirect; the password never reaches ACNHRecomp).
 
 The game's `id_token` comes signed by Rustendo (`GET /api/game/id-token`). Rustendo's sign-in is kept in

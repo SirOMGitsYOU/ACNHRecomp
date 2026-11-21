@@ -2,7 +2,7 @@
 // hle_hostnet.cpp, instead of the console's ssl service. The game reaches it through the C API (libcurl:
 // nnsslConnection*) and a few C++ calls (NEX: nn::ssl::Context). The Nextendo servers present certificates for
 // Nintendo's hostnames that no trust store accepts (self-signed, or from Nextendo's own CA), so instead of a chain
-// the server's public key is checked against the keys Nextendo's game servers use (nextendo_peer_pinned): a
+// the server's public key is checked against the keys Nextendo's (or Rustendo's) game servers use (nextendo_peer_pinned): a
 // connection whose key is not one of them is closed before the game sends anything, so its tokens never reach a
 // stranger in the middle. Every name the game contacts is redirected to Nextendo, so nothing else needs to pass.
 //
@@ -100,6 +100,11 @@ static const char* const kNextendoPins[] = {
     "0uc4jkjuMM++z761IodPLMa4X3qhEFxXZp88Kqhfsw4=",  // g2ee2e300-lp1.s.n.srv.nintendo.net (:443 and :60007)
     "6yJjGQLydiGDaOWd+sc/ZWv4ORw1bmw38HkEnbQNWW8=",  // api-lp1.znc.srv.nintendo.net
 };
+// The live Rustendo server's key (November 2026): one certificate (the Rustendo CA's) for every name it answers. A
+// custom Rustendo server has no built-in key: its keys go in online.rustendo.tls_pins (or NEXTENDO_TLS_PINS).
+static const char* const kRustendoPins[] = {
+    "3OeY6MqG53qXDbV1VcrXRzUxUBbkrJDSwfspAFeZX0E=",
+};
 
 std::string spki_sha256_b64(const mbedtls_x509_crt& crt) {
     unsigned char der[4096];
@@ -114,7 +119,8 @@ std::string spki_sha256_b64(const mbedtls_x509_crt& crt) {
 }
 
 bool nextendo_peer_pinned(const mbedtls_ssl_context* ssl, const std::string& host) {
-    std::string extra = config_get("online.nextendo.tls_pins", "");
+    const bool rustendo = nextendo::is_rustendo();
+    std::string extra = config_get(rustendo ? "online.rustendo.tls_pins" : "online.nextendo.tls_pins", "");
     const char* env_pins = std::getenv("NEXTENDO_TLS_PINS");
     // "any" as the whole variable only: a pin is base64 and may start with those letters (config.ini can't turn it off)
     if (env_pins && std::strcmp(env_pins, "any") == 0) return true;
@@ -125,8 +131,13 @@ bool nextendo_peer_pinned(const mbedtls_ssl_context* ssl, const std::string& hos
         log("ssl: %s: no server certificate; refused", host.c_str());
         return false;
     }
-    for (const char* pin : kNextendoPins)
-        if (key == pin) return true;
+    if (!rustendo) {
+        for (const char* pin : kNextendoPins)
+            if (key == pin) return true;
+    } else if (!nextendo::rustendo_custom()) {
+        for (const char* pin : kRustendoPins)
+            if (key == pin) return true;
+    }
     for (size_t i = 0; i <= extra.size();) {
         size_t e = extra.find(',', i);
         if (e == std::string::npos) e = extra.size();
@@ -136,7 +147,9 @@ bool nextendo_peer_pinned(const mbedtls_ssl_context* ssl, const std::string& hos
         if (!pin.empty() && pin == key) return true;
         i = e + 1;
     }
-    log("ssl: %s: the server's key (sha256/%s) is not Nextendo's; refused", host.c_str(), key.c_str());
+    log("ssl: %s: the server's key (sha256/%s) is not %s's; refused%s", host.c_str(), key.c_str(),
+        rustendo ? "Rustendo" : "Nextendo",
+        rustendo && nextendo::rustendo_custom() ? " (add it to online.rustendo.tls_pins for a custom server)" : "");
     return false;
 }
 
