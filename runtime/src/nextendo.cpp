@@ -678,12 +678,6 @@ void set_rustendo_api_override(const std::string& base) {
 
 void set_rustendo_custom_override(bool custom) { g_rustendo_custom_override = custom ? 1 : 0; }
 
-// shortcut: the origin address is built in (as kLiveRustendoIp); move it to DNS if the server ever changes address.
-std::string rustendo_origin_resolve() {
-    if (!is_rustendo() || rustendo_custom()) return {};
-    return std::string("rustendo.network:443:") + kLiveRustendoIp;
-}
-
 // A custom Rustendo server (online.rustendo.custom, or env RUSTENDO_API: a developer's) instead of the live one.
 bool rustendo_custom() {
     if (const char* e = std::getenv("RUSTENDO_API"); e && e[0]) return true;

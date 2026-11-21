@@ -52,9 +52,6 @@ bool rustendo_custom();
 std::string rustendo_api();
 void set_rustendo_api_override(const std::string& base);  // launcher Ini
 void set_rustendo_custom_override(bool custom);           // launcher Ini
-// Live Rustendo only: curl's --resolve value sending rustendo.network to the server itself (its website is behind
-// Cloudflare Access, which the game cannot pass); "" otherwise.
-std::string rustendo_origin_resolve();
 bool version_ok_for_nextendo();  // game build reports 3.0.3
 std::string game_version_string();  // "" if unknown
 void set_game_version(const std::string& version);  // launcher / runtime once known

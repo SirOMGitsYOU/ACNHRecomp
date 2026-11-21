@@ -1,7 +1,6 @@
 // HTTPS via curl on PATH (Windows 10+, macOS, Linux) — same pattern as launcher/desktop.cpp.
 #include "nextendo_http.h"
 
-#include "nextendo.h"
 #include "platform.h"
 
 #include <cstdio>
@@ -187,12 +186,6 @@ HttpResponse http_request(const std::string& method, const std::string& url,
     if (!body.empty()) {
         argv.push_back("--data-binary");
         argv.push_back("@" + body_path);
-    }
-    // The live Rustendo website sits behind Cloudflare Access, which a game cannot sign in to: its API calls go to
-    // the server itself, still verified against the site's certificate.
-    if (const std::string pin = rustendo_origin_resolve(); !pin.empty()) {
-        argv.push_back("--resolve");
-        argv.push_back(pin);
     }
     argv.push_back(url);
 
