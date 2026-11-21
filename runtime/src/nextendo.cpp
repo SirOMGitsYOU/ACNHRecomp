@@ -346,12 +346,11 @@ bool oauth_listen(const std::string& expect_state, std::string& code_out, int ti
         return false;
     }
     buf[n] = 0;
-    const std::string ok =
-        std::string("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
-                    "<!doctype html><html><body><p>Signed in to ") +
-        (is_rustendo() ? "Rustendo" : "Nextendo") +
-        ". You can close this window and return to ACNHRecomp.</p></body></html>";
-    send(client, ok.data(), int(ok.size()), MSG_NOSIGNAL);
+    const char* ok =
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n"
+        "<!doctype html><html><body><p>Signed in to Nextendo. You can close this window and return to "
+        "ACNHRecomp.</p></body></html>";
+    send(client, ok, int(std::strlen(ok)), MSG_NOSIGNAL);
     sock_close(client);
     std::string req(buf);
     size_t q = req.find('?');
