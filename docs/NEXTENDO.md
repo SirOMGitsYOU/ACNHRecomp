@@ -70,30 +70,33 @@ ACNH only forwards the `id_token`; the server trusts the `nnex` game token insid
 ## Rustendo
 
 Rustendo is a separate, self-hostable server. Choose **Rustendo** as the network mode (launcher or in-game
-Settings > Online), or in `config.ini`:
+Settings > Online). It plays on the live server: browser sign-in at `https://rustendo.network`, game servers at
+`188.40.72.254` (the website is behind Cloudflare, which passes only its HTTPS, so the Nintendo names go to the
+server's own address; the NAT check uses that address on ports 10025 and 10125).
+
+**Custom server** (under the sign-in button) chooses another Rustendo server, in `config.ini`:
 
 ```ini
 [online]
 mode = rustendo
+rustendo.custom = 1
 rustendo_api = http://127.0.0.1:8090
+rustendo.server = 127.0.0.1
 ```
 
-`rustendo_api` is the server's website (default `http://127.0.0.1:8090`). Sign in either way:
-
-- **Browser:** sign in on the website and press **Allow** (OAuth with PKCE, loopback redirect; the password never
-  reaches ACNHRecomp).
-- **User id + game token:** the website's Console sign-in card shows your user id and makes a game token (it works
-  once and expires after 30 days). Enter both in the Rustendo settings.
+`rustendo_api` is the server's website, for browser sign-in (default `http://127.0.0.1:8090`); `rustendo.server` the
+address the Nintendo names resolve to (an IP, or a host name not behind a proxy). Sign in in the browser: sign in on
+the website and press **Allow** (OAuth with PKCE, loopback redirect; the password never reaches ACNHRecomp).
 
 The game's `id_token` comes signed by Rustendo (`GET /api/game/id-token`). Rustendo's sign-in is kept in
-`<data root>/rustendo_account.json`, apart from Nextendo's, so switching modes never sends one server's tokens to the
-other. Rustendo's game servers report who is playing; the client posts `POST /api/presence` only to say when it is in online play (status 2), which friends need to find an open island under Search for a friend.
+`<data root>/rustendo_network_account.json` (live server) or `rustendo_account.json` (custom server), apart from
+Nextendo's, so switching never sends one server's tokens to the other. Rustendo's game servers report who is playing; the client posts `POST /api/presence` only to say when it is in online play (status 2), which friends need to find an open island under Search for a friend.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `RUSTENDO_API` | Rustendo website; also turns Rustendo mode on | config `online.rustendo_api` |
-| `RUSTENDO_SERVER_IP` | Address the Nintendo names resolve to | `127.0.0.1` |
-| `RUSTENDO_NAT_IP` | Second NAT-check address (must differ) | `127.0.0.2` |
+| `RUSTENDO_API` | Rustendo website; also turns Rustendo mode and Custom server on | config `online.rustendo_api` |
+| `RUSTENDO_SERVER_IP` | Address the Nintendo names resolve to | live `188.40.72.254`; custom `online.rustendo.server`, else `127.0.0.1` |
+| `RUSTENDO_NAT_IP` | Second NAT-check address (custom: must differ) | live `188.40.72.254`; custom `online.rustendo.nat`, else `127.0.0.2` |
 
 ### Two copies on one PC
 

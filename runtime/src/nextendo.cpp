@@ -65,6 +65,7 @@ std::string g_last_error;
 std::string g_data_root_override;
 std::string g_mode_override;
 std::string g_rustendo_api_override;
+std::atomic<int> g_rustendo_custom_override{-1};  // launcher: its game ini's online.rustendo.custom; -1: config
 std::string g_client_id_override;
 std::atomic<bool> g_sign_in_busy{false};
 std::unordered_map<uint32_t, std::string> g_ip_host;
@@ -220,8 +221,12 @@ std::string data_root() {
 #endif
 }
 
-// Each server keeps its own sign-in, so switching never sends one server's tokens to the other.
-std::string account_path() { return data_root() + (is_rustendo() ? "/rustendo_account.json" : "/nextendo_account.json"); }
+// Each server keeps its own sign-in, so switching never sends one server's tokens to the other (the live Rustendo
+// server's apart from a custom one's).
+std::string account_path() {
+    if (!is_rustendo()) return data_root() + "/nextendo_account.json";
+    return data_root() + (rustendo_custom() ? "/rustendo_account.json" : "/rustendo_network_account.json");
+}
 
 std::string env_or(const char* name, const std::string& fallback) {
     if (const char* e = std::getenv(name); e && e[0]) return e;
@@ -659,15 +664,34 @@ static std::string checked_base(const char* var, const std::string& fallback) {
 }
 
 constexpr const char* kDefaultRustendoApi = "http://127.0.0.1:8090";
+// The live Rustendo server: its website (browser sign-in, API) is behind Cloudflare, which passes only HTTPS for that
+// name, so the game's Nintendo names go to the server's own address.
+constexpr const char* kLiveRustendoApi = "https://rustendo.network";
+constexpr const char* kLiveRustendoIp = "188.40.72.254";
 
 void set_rustendo_api_override(const std::string& base) {
     std::lock_guard lk(g_mu);
     g_rustendo_api_override = base;
 }
 
-// The Rustendo website the player chose (env RUSTENDO_API, else the launcher's or config online.rustendo_api, else the
-// local default). Named explicitly by the player, so any http(s) address is taken as given.
+void set_rustendo_custom_override(bool custom) { g_rustendo_custom_override = custom ? 1 : 0; }
+
+// A custom Rustendo server (online.rustendo.custom, or env RUSTENDO_API: a developer's) instead of the live one.
+bool rustendo_custom() {
+    if (const char* e = std::getenv("RUSTENDO_API"); e && e[0]) return true;
+    if (const int o = g_rustendo_custom_override.load(); o >= 0) return o == 1;
+#if !defined(NX_LAUNCHER_UI)
+    return config_get("online.rustendo.custom", "0") == "1";
+#else
+    return false;
+#endif
+}
+
+// The Rustendo website: the live server's, or for a custom server the one the player chose (env RUSTENDO_API, else the
+// launcher's or config online.rustendo_api, else the local default). Named explicitly by the player, so any http(s)
+// address is taken as given.
 std::string rustendo_api() {
+    if (!rustendo_custom()) return kLiveRustendoApi;
     std::string b = env_or("RUSTENDO_API", "");
     if (b.empty()) {
         std::lock_guard lk(g_mu);
@@ -697,12 +721,14 @@ std::string auth_base() { return is_rustendo() ? api_base() : checked_base("NEXT
 // Nextendo's game and NAT-check servers. Nextendo publishes no DNS name for them (nextendo.network is its web front),
 // so the addresses in use in November 2026 are built in. They can be changed without a rebuild, as an IP or a host
 // name: NEXTENDO_SERVER_IP / NEXTENDO_NAT_IP, or online.nextendo.server / online.nextendo.nat in config.ini (Rustendo:
-// RUSTENDO_SERVER_IP / RUSTENDO_NAT_IP, online.rustendo.server / online.rustendo.nat). A name is resolved (and kept)
-// on first use; the built-in address stands in when it does not resolve. An IPv6 address works too (hle_hostnet.cpp).
+// RUSTENDO_SERVER_IP / RUSTENDO_NAT_IP, online.rustendo.server / online.rustendo.nat for a custom server; the live one
+// answers the NAT check on its own address, ports 10025 and 10125). A name is resolved (and kept) on first use; the
+// built-in address stands in when it does not resolve. An IPv6 address works too (hle_hostnet.cpp). key: nullptr
+// reads no config.
 static std::string address_of(const char* env, const char* key, const char* builtin) {
     std::string v = env_or(env, "");
 #if !defined(NX_LAUNCHER_UI)
-    if (v.empty()) v = trim(config_get(key, ""));
+    if (v.empty() && key) v = trim(config_get(key, ""));
 #else
     (void)key;
 #endif
@@ -735,10 +761,12 @@ static std::string address_of(const char* env, const char* key, const char* buil
 }
 
 std::string server_ip() {
+    if (is_rustendo() && !rustendo_custom()) return address_of("RUSTENDO_SERVER_IP", nullptr, kLiveRustendoIp);
     return is_rustendo() ? address_of("RUSTENDO_SERVER_IP", "online.rustendo.server", "127.0.0.1")
                          : address_of("NEXTENDO_SERVER_IP", "online.nextendo.server", "51.178.29.194");
 }
 std::string nat_ip() {
+    if (is_rustendo() && !rustendo_custom()) return address_of("RUSTENDO_NAT_IP", nullptr, kLiveRustendoIp);
     return is_rustendo() ? address_of("RUSTENDO_NAT_IP", "online.rustendo.nat", "127.0.0.2")
                          : address_of("NEXTENDO_NAT_IP", "online.nextendo.nat", "164.132.111.120");
 }
@@ -803,36 +831,6 @@ void sign_in_start() {
 #if !defined(NX_LAUNCHER_UI)
         presence_start();  // signed in from the settings screen while the game runs
 #endif
-    }).detach();
-}
-
-void sign_in_with_token(uint64_t user_id, const std::string& token_in) {
-    if (g_sign_in_busy.exchange(true)) return;
-    clear_error();
-    const std::string token = trim(token_in);
-    std::thread([user_id, token] {
-        struct Done {
-            ~Done() { g_sign_in_busy = false; }
-        } done;
-        if (!is_rustendo()) return set_error("Token sign-in is for Rustendo.");
-        if (!user_id || token.empty()) return set_error("Enter the user id and game token from the Rustendo website.");
-        // The game token is a refresh token issued to this app: one use, then the new one is kept.
-        const std::string form = "grant_type=refresh_token&client_id=" + percent_encode(client_id()) +
-                                 "&refresh_token=" + percent_encode(token);
-        Account a;
-        if (!exchange_token(form, a)) {
-            set_error("Rustendo refused that game token (it works once and expires after 30 days): make a new one.");
-            return;
-        }
-        if (a.pid != user_id) {
-            // Someone else's token: drop the session it opened rather than play on the wrong account.
-            set_error("That game token belongs to another user id.");
-            return;
-        }
-        set_account(a);
-        save_account();
-        ensure_online_identity();
-        log("nextendo: signed in to Rustendo as %s with a game token", account().username.c_str());
     }).detach();
 }
 

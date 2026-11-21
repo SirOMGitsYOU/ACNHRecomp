@@ -2542,29 +2542,16 @@ void footer_settings() {
 
 // ---- online: local play over the network (ldn_mitm's protocol), the same settings as the game's Online page ------
 
-// Rustendo: server address, then the account (browser sign-in, or the user id + game token from the website).
+// Rustendo: the account (browser sign-in); signed out, under it the live server or a custom one (domain + IP).
 void page_online_rustendo() {
     nx::nextendo::set_data_root(g_build.data);
     nx::nextendo::set_mode_override("rustendo");
     nx::nextendo::set_rustendo_api_override(g_game_ini.get("online.rustendo_api", ""));
+    bool custom = g_game_ini.get("online.rustendo.custom", "0") == "1";
+    nx::nextendo::set_rustendo_custom_override(custom);
     BuildContents c = build_contents(g_build.data);
     if (!c.version.empty()) nx::nextendo::set_game_version(c.version);
     nx::nextendo::load_account();
-    ImGui::TextUnformatted(tr("online.rustendo.api"));
-    text_small(tr("online.rustendo.api.desc"));
-    static char api[160] = {};
-    static bool loaded = false;
-    if (!loaded) {
-        loaded = true;
-        std::snprintf(api, sizeof api, "%s", nx::nextendo::rustendo_api().c_str());
-    }
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-    ImGui::InputText("##rustendo_api", api, sizeof api);
-    nav_item();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        g_game_ini.set("online.rustendo_api", api);
-        if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
-    }
     if (!nx::nextendo::version_ok_for_nextendo()) {
         ImGui::TextWrapped("%s", tr("online.nextendo.need_303"));
         ImGui::Separator();
@@ -2585,21 +2572,36 @@ void page_online_rustendo() {
     const bool busy = nx::nextendo::sign_in_busy();
     if (button(tr(busy ? "online.nextendo.signing_in" : "online.rustendo.sign_in"), kMint, !busy))
         nx::nextendo::sign_in_start();
-    static char user_id[24] = {}, token[128] = {};
-    ImGui::TextUnformatted(tr("online.rustendo.user_id"));
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-    ImGui::InputText("##rustendo_user", user_id, sizeof user_id, ImGuiInputTextFlags_CharsDecimal);
-    nav_item();
-    ImGui::TextUnformatted(tr("online.rustendo.token"));
-    text_small(tr("online.rustendo.token.desc"));
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-    ImGui::InputText("##rustendo_token", token, sizeof token, ImGuiInputTextFlags_Password);
-    nav_item();
-    if (button(tr("online.rustendo.token_sign_in"), kMint, !busy)) {
-        nx::nextendo::sign_in_with_token(std::strtoull(user_id, nullptr, 10), token);
-        token[0] = 0;  // a game token works once: never kept in the UI
-    }
     if (!nx::nextendo::last_error().empty()) ImGui::TextWrapped("%s", nx::nextendo::last_error().c_str());
+    text_small(tr("online.rustendo.custom.desc"));
+    if (ImGui::Checkbox(tr("online.rustendo.custom"), &custom)) {
+        g_game_ini.set("online.rustendo.custom", custom ? "1" : "0");
+        if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
+    }
+    nav_item();
+    // Text fields saved when edited: `key` in the game's config.ini.
+    auto field = [](const char* label, const char* id, const char* key, char* buf, size_t n) {
+        ImGui::TextUnformatted(tr(label));
+        text_small(tr((std::string(label) + ".desc").c_str()));
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::InputText(id, buf, n);
+        nav_item();
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g_game_ini.set(key, buf);
+            if (!g_game_ini.save()) toast(tr("launcher.settings.save_failed"));
+        }
+    };
+    if (custom) {
+        static char api[160] = {}, ip[96] = {};
+        static bool loaded = false;
+        if (!loaded) {
+            loaded = true;
+            std::snprintf(api, sizeof api, "%s", nx::nextendo::rustendo_api().c_str());
+            std::snprintf(ip, sizeof ip, "%s", g_game_ini.get("online.rustendo.server", "").c_str());
+        }
+        field("online.rustendo.api", "##rustendo_api", "online.rustendo_api", api, sizeof api);
+        field("online.rustendo.server", "##rustendo_server", "online.rustendo.server", ip, sizeof ip);
+    }
     ImGui::Separator();
 }
 

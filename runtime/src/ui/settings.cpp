@@ -142,7 +142,7 @@ void toast(const std::string& text) {
 // desktop's present pass is chosen at start).
 bool needs_restart(const std::string& key) {
     if (key.rfind("online.", 0) == 0) {
-        if (key == "online.mode" || key == "online.rustendo_api") {
+        if (key == "online.mode" || key == "online.rustendo_api" || key == "online.rustendo.custom") {
             ::nx::nextendo::load_account();    // each server keeps its own sign-in
             ::nx::nextendo::presence_start();  // starts once, when signed in and online; idles while not online
         }
@@ -886,8 +886,12 @@ void page_fix_link() {
 }
 #endif
 
-// Rustendo's server address.
-void rustendo_server_row() {
+// The live Rustendo server, or with "Custom server" on: the website (browser sign-in) and the game servers' address.
+void rustendo_server_rows() {
+    row("online.rustendo.custom", tr("online.rustendo.custom.desc"), [&](float w) {
+        toggle("online.rustendo.custom", false, w);
+    });
+    if (config_get("online.rustendo.custom", "0") != "1") return;
     row("online.rustendo.api", tr("online.rustendo.api.desc"), [&](float w) {
         static char api[160] = {};
         static bool loaded = false;
@@ -900,28 +904,17 @@ void rustendo_server_row() {
         page_nav_item();
         if (ImGui::IsItemDeactivatedAfterEdit()) store("online.rustendo_api", api);
     });
-}
-
-// Signed out of Rustendo: the user id + game token sign-in (both on the website's Settings page), so several copies of
-// the game on one computer can each use their own account.
-void rustendo_token_rows() {
-    static char user_id[24] = {}, token[128] = {};
-    row("online.rustendo.user_id", tr("online.rustendo.user_id.desc"), [&](float w) {
-        ImGui::SetNextItemWidth(w);
-        ImGui::InputText("##rustendo_user", user_id, sizeof user_id, ImGuiInputTextFlags_CharsDecimal);
-        page_nav_item();
-    });
-    row("online.rustendo.token", tr("online.rustendo.token.desc"), [&](float w) {
-        ImGui::SetNextItemWidth(w);
-        ImGui::InputText("##rustendo_token", token, sizeof token, ImGuiInputTextFlags_Password);
-        page_nav_item();
-        const bool busy = nxo::sign_in_busy();
-        if (ImGui::Button(tr(busy ? "online.nextendo.signing_in" : "online.rustendo.token_sign_in"), ImVec2(w, 0)) &&
-            !busy) {
-            nxo::sign_in_with_token(std::strtoull(user_id, nullptr, 10), token);
-            token[0] = 0;  // a game token works once: never kept in the UI
+    row("online.rustendo.server", tr("online.rustendo.server.desc"), [&](float w) {
+        static char ip[96] = {};
+        static bool loaded = false;
+        if (!loaded) {
+            loaded = true;
+            std::snprintf(ip, sizeof ip, "%s", config_get("online.rustendo.server", "").c_str());
         }
+        ImGui::SetNextItemWidth(w);
+        ImGui::InputText("##rustendo_server", ip, sizeof ip);
         page_nav_item();
+        if (ImGui::IsItemDeactivatedAfterEdit()) store("online.rustendo.server", ip);
     });
 }
 
@@ -951,7 +944,6 @@ void page_online() {
     });
     if (nextendo) {
         section(rustendo ? "online.section.rustendo" : "online.section.nextendo");
-        if (rustendo && nxo::version_ok_for_nextendo()) rustendo_server_row();
 #if defined(__ANDROID__)
         // The account API's HTTPS goes through curl (nextendo_http.cpp), which Android does not have: no sign-in here
         // until it moves onto Mbed TLS.
@@ -965,7 +957,7 @@ void page_online() {
             std::string desc = trf("online.nextendo.signed_in", acc.username);
             if (!acc.friend_code.empty()) desc += "\n" + trf("online.nextendo.friend_code", acc.friend_code);
             desc += std::string("\n") + tr("online.nextendo.requirements");  // the game's only sign is a generic error
-            if (!nxo::last_error().empty()) desc += "\n" + nxo::last_error();  // a refused game token says why
+            if (!nxo::last_error().empty()) desc += "\n" + nxo::last_error();  // e.g. a refused game token
             row("online.nextendo.account", desc.c_str(), [&](float w) {
                 if (ImGui::Button(tr("online.nextendo.sign_out"), ImVec2(w, 0))) nxo::sign_out();
                 page_nav_item();
@@ -993,7 +985,7 @@ void page_online() {
                     nxo::sign_in_start();
                 page_nav_item();
             });
-            if (rustendo) rustendo_token_rows();
+            if (rustendo) rustendo_server_rows();
         }
 #if !defined(__ANDROID__)
         if (!rustendo) {  // the status check asks Nextendo's status page

@@ -42,12 +42,16 @@ void set_client_id_override(const std::string& id);  // launcher before OAuth
 Mode mode();  // online.mode: nextendo (default), rustendo or local; env RUSTENDO_API forces rustendo
 bool is_nextendo();
 bool is_local();
-// Rustendo (a self-hosted server) as the online server. Its website is online.rustendo_api (default
-// http://127.0.0.1:8090). Browser sign-in, or a user id and game token from that website; the game's id_token comes
-// signed by the server. Its sign-in is kept apart from Nextendo's (rustendo_account.json).
+// Rustendo as the online server: the live one (website https://rustendo.network, game servers 188.40.72.254), or with
+// online.rustendo.custom a custom server: website online.rustendo_api (default http://127.0.0.1:8090), game servers
+// online.rustendo.server. Browser sign-in on that website; the game's id_token comes
+// signed by the server. Its sign-in is kept apart from Nextendo's and the live server's from a custom one's
+// (rustendo_network_account.json / rustendo_account.json).
 bool is_rustendo();
+bool rustendo_custom();
 std::string rustendo_api();
 void set_rustendo_api_override(const std::string& base);  // launcher Ini
+void set_rustendo_custom_override(bool custom);           // launcher Ini
 bool version_ok_for_nextendo();  // game build reports 3.0.3
 std::string game_version_string();  // "" if unknown
 void set_game_version(const std::string& version);  // launcher / runtime once known
@@ -77,8 +81,6 @@ std::string nat_ip();      // NEXTENDO_NAT_IP or 164.132.111.120
 // Browser PKCE sign-in on a background thread; poll sign_in_busy / last_error.
 std::string pkce_challenge(const std::string& verifier);  // S256: base64url(SHA-256(verifier)), RFC 7636
 void sign_in_start();
-// Rustendo: sign in with the user id and game token its website shows, on a background thread (as sign_in_start).
-void sign_in_with_token(uint64_t user_id, const std::string& token);
 void sign_out();
 bool sign_in_busy();
 std::string last_error();
