@@ -813,7 +813,11 @@ void sign_in_start() {
                     auth_base() + (is_rustendo() ? "/oauth/authorize" : "/api/oauth/authorize") +
                     "?client_id=" + percent_encode(cid) +
                     "&redirect_uri=" + percent_encode(redirect_uri) + "&response_type=code&scope=" +
-                    percent_encode("identity friends presence game.matchmaking") + "&state=" + percent_encode(state) +
+                    // Rustendo refuses a scope its app registration lacks: its id_token needs `game`, Island
+                    // Backups `saves`.
+                    percent_encode(is_rustendo() ? "identity friends presence game saves"
+                                                 : "identity friends presence game.matchmaking") +
+                    "&state=" + percent_encode(state) +
                     "&code_challenge=" + percent_encode(challenge) + "&code_challenge_method=S256";
                 if (!open_browser(url)) set_error("Could not open a browser for Nextendo sign-in.");
             })) {
