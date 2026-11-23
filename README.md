@@ -1,6 +1,10 @@
-# ACNHRecomp
+<div align="center">
+
+![Project Logo](./artwork/projectLogo.png)
 
 **A native PC port of Animal Crossing: New Horizons, made by static recompilation.**
+
+</div>
 
 <p align="center">
   <a href="https://discord.gg/VJW9Dtdu7a">
