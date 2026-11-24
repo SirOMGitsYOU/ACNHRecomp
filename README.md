@@ -787,7 +787,7 @@ More detail: [docs/ACNH.md](docs/ACNH.md) (the game's modules, RomFS and shader 
   vibration, launcher fullscreen, and related UI fixes.
 - [SirOMGitsYOU](https://github.com/SirOMGitsYOU): Amiibo / NFC support, Time Travel, Auto-start overhaul, Mod Manager,
   Multi Save system, Discord Rich Presence integration, Camera App functionality, Nextendo + Online support,
-  Ultrawide flicker fix, and FidelityFX / DLSS in the Windows release.
+  Ultrawide flicker fix, FidelityFX / DLSS in the Windows release, and the vectorised Project Dodo logo.
 - [vzeol](https://github.com/vzeol): online / local play between computers, Discord Rich Presence, Windows packaging
   fixes, present pacing, and SpeedFix for 3.0.3.
 - [YaBoi69er](https://github.com/YaBoi69er): HDR output (scRGB / HDR10) and temporal AA / upscaling — NVIDIA DLSS,
@@ -796,6 +796,7 @@ More detail: [docs/ACNH.md](docs/ACNH.md) (the game's modules, RomFS and shader 
 - [RonyNjr](https://github.com/RonyNjr): Party Play — up to four controllers on macOS and Linux.
 - [cashcon57](https://github.com/cashcon57): recompiler — SADALP / UADALP 64-bit forms clear the destination's upper
   half.
+- [Norin](https://github.com/desturtsuelian-blip): the Project Dodo name and the original logo.
 
 ### Project references
 
