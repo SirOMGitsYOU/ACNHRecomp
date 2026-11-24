@@ -796,7 +796,7 @@ More detail: [docs/ACNH.md](docs/ACNH.md) (the game's modules, RomFS and shader 
 - [RonyNjr](https://github.com/RonyNjr): Party Play — up to four controllers on macOS and Linux.
 - [cashcon57](https://github.com/cashcon57): recompiler — SADALP / UADALP 64-bit forms clear the destination's upper
   half.
-- [Norin](https://github.com/desturtsuelian-blip): the Project Dodo name and the original logo.
+- [Norin](https://www.artstation.com/norinn): the Project Dodo name and the original logo.
 
 ### Project references
 

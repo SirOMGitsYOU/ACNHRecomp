@@ -3427,7 +3427,7 @@ void page_credits() {
     credit_entry("Rafacasari", tr("launcher.credits.contrib.rafacasari"), "https://github.com/Rafacasari");
     credit_entry("RonyNjr", tr("launcher.credits.contrib.ronynjr"), "https://github.com/RonyNjr");
     credit_entry("cashcon57", tr("launcher.credits.contrib.cashcon57"), "https://github.com/cashcon57");
-    credit_entry("Norin", tr("launcher.credits.contrib.norin"), "https://github.com/desturtsuelian-blip");
+    credit_entry("Norin", tr("launcher.credits.contrib.norin"), "https://www.artstation.com/norinn");
 
     ImGui::Dummy(ImVec2(0, S(10)));
     ImGui::PushFont(g_title);
