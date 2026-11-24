@@ -17,7 +17,7 @@ while IFS= read -r f; do
       echo "BLOCKED (game/derived file type): $f"; bad=1; continue ;;
   esac
   case "$lf" in
-    android/res/mipmap-*/*.png|android/icon_512.png) continue ;;  # the launcher icon, drawn by tools/make_android_icon.py
+    android/res/mipmap-*/*.png|android/icon_512.png) continue ;;  # the launcher icon, from artwork/iconRounded.png and iconCircular.png (tools/make_android_icon.py)
     assets/acnhrecomp.png|assets/acnhrecomp.ico|assets/acnhrecomp.icns) continue ;;  # the same, tools/make_icons.sh
   esac
   if [ "$(head -c 8000 "$f" | LC_ALL=C tr -d '\000' | wc -c)" -ne "$(head -c 8000 "$f" | wc -c)" ]; then

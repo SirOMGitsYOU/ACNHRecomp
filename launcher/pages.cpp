@@ -718,24 +718,27 @@ void language_combo(float width) {
 void ribbon() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    float h = S(64), w = ImGui::GetContentRegionAvail().x;
+    float w = ImGui::GetContentRegionAvail().x;
+    // The project's name, a yellow line (as in artwork/fullProjectLogo.png) and the subtitle below it.
+    float tsz = font_size(g_title), ssz = font_size(g_body) * 0.82f, line = S(4), gap = S(4);
+    const char* name = "Project Dodo";
+    const char* sub = tr("launcher.subtitle");
+    ImVec2 ts = measure(g_title, tsz, name, -1), ss = measure(g_body, ssz, sub, -1);
+    float h = std::max(S(64), ts.y + gap + line + gap + ss.y + S(16));
     dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), kGreen, h * 0.5f);
-    dl->AddCircleFilled(ImVec2(p.x + h * 0.5f, p.y + h * 0.5f), h * 0.36f, rgb(255, 255, 255, 60));
-    theme_icon(dl, nx::ui::kIconLeaf, ImVec2(p.x + h * 0.5f, p.y + h * 0.5f), h * 0.3f, kWhite);
     // Measured in the combo's own font, with room for the frame padding and the arrow.
     float combo_w = measure(g_body, font_size(g_body), language_shown().c_str(), -1).x + ImGui::GetFrameHeight() +
                     ImGui::GetStyle().FramePadding.x * 2 + S(24);
     combo_w = std::clamp(combo_w, S(150), g_portrait ? w * 0.5f : S(420));
-    float tsz = font_size(g_title);
-    ImVec2 ts = measure(g_title, tsz, "ACNHRecomp", -1);
-    float x = p.x + h * 1.0f;
-    dl->AddText(g_title, tsz, ImVec2(x, p.y + (h - ts.y) * 0.5f), kWhite, "ACNHRecomp");
-    const char* sub = tr("launcher.subtitle");
-    float ssz = font_size(g_body) * 0.82f;
-    ImVec2 ss = measure(g_body, ssz, sub, -1);
-    float room = w - (x - p.x) - ts.x - combo_w - h * 0.9f;
-    if (ss.x < room)
-        dl->AddText(g_body, ssz, ImVec2(x + ts.x + S(16), p.y + (h - ss.y) * 0.5f + S(2)), rgb(255, 255, 255, 215), sub);
+    float x = p.x + h * 0.4f;
+    bool show_sub = ss.x < w - (x - p.x) - combo_w - h * 0.9f;
+    float y = p.y + (h - ts.y - (show_sub ? gap + line + gap + ss.y : 0)) * 0.5f;
+    dl->AddText(g_title, tsz, ImVec2(x, y), kWhite, name);
+    if (show_sub) {
+        y += ts.y + gap;
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + std::max(ts.x, ss.x), y + line), kYellow);
+        dl->AddText(g_body, ssz, ImVec2(x, y + line + gap), rgb(255, 255, 255, 215), sub);
+    }
     // The language, always reachable.
     float gx = p.x + w - combo_w - h * 0.35f - S(30);
     theme_icon(dl, nx::ui::kIconGlobe, ImVec2(gx, p.y + h * 0.5f), S(14), kWhite);

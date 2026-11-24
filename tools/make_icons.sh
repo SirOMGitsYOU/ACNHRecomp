@@ -1,10 +1,11 @@
 #!/bin/bash
 # The app's icon for the computers, from android/icon_512.png (tools/make_android_icon.py): assets/acnhrecomp.png
 # (Linux), .ico (Windows, assets/acnhrecomp.rc), .icns (macOS, ACNHRecomp.app) and runtime/src/app_icon_rgba.inc
-# (the windows' icon, app_icon.cpp). Needs Python with Pillow; the .icns needs macOS (iconutil).
+# (the windows' icon, app_icon.cpp).
+# Needs Python with Pillow ($PYTHON, python3 by default); the .icns needs macOS (iconutil).
 cd "$(dirname "$0")/.." || exit 1
 set -e
-python3 - <<'PY'
+"${PYTHON:-python3}" - <<'PY'
 from PIL import Image
 im = Image.open('android/icon_512.png').convert('RGBA')
 im.save('assets/acnhrecomp.png')
